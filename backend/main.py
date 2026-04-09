@@ -7,6 +7,7 @@ import io
 import re
 import json
 import logging
+from semantic import build_semantic_map, gcol as semantic_gcol
 from typing import Optional, List
 from datetime import datetime, date
 import pandas as pd
@@ -176,22 +177,13 @@ COL_MAP = {
     "tail_spend":           ["tail spend","tail"],
 }
 
-def build_col_map(df_columns: list) -> dict:
+def build_col_map(df: pd.DataFrame) -> dict:
     """
-    Costruisce il lookup nome_interno -> nome_colonna_reale (case-insensitive).
-    Log delle colonne non trovate per debug.
+    Costruisce la mappa colonne usando il rilevamento semantico.
+    Analizza il CONTENUTO delle celle, non il nome.
+    Compatibile con qualsiasi versione del file Alyante.
     """
-    normalized = {c.strip().lower(): c for c in df_columns}
-    lookup = {}
-    for internal, candidates in COL_MAP.items():
-        for cand in candidates:
-            if cand.lower() in normalized:
-                lookup[internal] = normalized[cand.lower()]
-                break
-    found = set(lookup.keys())
-    missing = set(COL_MAP.keys()) - found
-    log.info(f"Column mapping: {len(found)} found, {len(missing)} missing: {missing}")
-    return lookup
+    return build_semantic_map(df, min_confidence=60)
 
 def gcol(col_lookup: dict, key: str, row) -> any:
     """Legge valore da riga usando il mapping."""
@@ -208,10 +200,10 @@ def detect_best_sheet(xl: pd.ExcelFile) -> tuple:
     
     for sheet in xl.sheet_names:
         try:
-            df_sample = pd.read_excel(xl, sheet_name=sheet, nrows=3)
+            df_sample = pd.read_excel(xl, sheet_name=sheet, nrows=100)
             if df_sample.empty or len(df_sample.columns) < 5:
                 continue
-            col_lookup = build_col_map(df_sample.columns)
+            col_lookup = build_col_map(df_sample)
             key_cols = ["data_doc","imp_iniziale","ragione_sociale","alfa_documento"]
             score = sum(1 for k in key_cols if k in col_lookup)
             # Bonus se ha colonne EUR
@@ -404,7 +396,7 @@ async def upload_saving(
         raise HTTPException(400, f"Errore lettura file: {e}")
 
     df.columns = [c.strip() for c in df.columns]
-    col = build_col_map(df.columns)
+    col = build_col_map(df)
 
     date_col = col.get("data_doc")
     if not date_col:
@@ -681,8 +673,8 @@ async def preview_file(file: UploadFile = File(...)):
     best_score = 0
     for sheet in xl.sheet_names:
         try:
-            df = pd.read_excel(xl, sheet_name=sheet, nrows=5)
-            col = build_col_map(df.columns)
+            df = pd.read_excel(xl, sheet_name=sheet, nrows=100)
+            col = build_col_map(df)
             score = sum(1 for k in ["data_doc","imp_iniziale","ragione_sociale","alfa_documento"] if k in col)
             if "imp_iniziale_eur" in col: score += 2
             n_rows = len(pd.read_excel(xl, sheet_name=sheet))
