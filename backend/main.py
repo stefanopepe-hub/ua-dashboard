@@ -796,3 +796,366 @@ def delete_upload(upload_id: str):
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "2.0.0"}
+
+
+# ─────────────────────────────────────────────
+# YoY — CONFRONTO ANNO PRECEDENTE
+# ─────────────────────────────────────────────
+
+def get_saving_df(anno=None, str_ric=None, cdc=None):
+    sb = get_supabase()
+    q = sb.table("saving").select(
+        "data_doc,imp_iniziale_eur,saving_eur,negoziazione,alfa_documento,accred_albo,str_ric,cdc,utente,desc_gruppo_merceol,ragione_sociale"
+    )
+    if anno: q = q.gte("data_doc",f"{anno}-01-01").lte("data_doc",f"{anno}-12-31")
+    if str_ric: q = q.eq("str_ric", str_ric)
+    if cdc: q = q.eq("cdc", cdc)
+    rows = q.execute().data
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["data_doc"] = pd.to_datetime(df["data_doc"])
+        df["mese"] = df["data_doc"].dt.strftime("%Y-%m")
+        df["mese_num"] = df["data_doc"].dt.month
+    return df
+
+
+@app.get("/kpi/saving/yoy")
+def kpi_saving_yoy(
+    anno: int = Query(...),
+    str_ric: Optional[str] = Query(None),
+    cdc: Optional[str] = Query(None),
+):
+    """
+    Confronto YoY mensile: anno corrente vs anno precedente.
+    Restituisce per ogni mese i valori di entrambi gli anni.
+    """
+    anno_prec = anno - 1
+    df_curr = get_saving_df(anno, str_ric, cdc)
+    df_prev = get_saving_df(anno_prec, str_ric, cdc)
+
+    doc_neg = ["OS","OSP","PS","OPR","ORN"]
+
+    def monthly_kpi(df, label):
+        if df.empty:
+            return {}
+        df_neg = df[df["alfa_documento"].isin(doc_neg)]
+        result = {}
+        for m in range(1, 13):
+            grp = df[df["mese_num"] == m]
+            grp_neg = df_neg[df_neg["mese_num"] == m]
+            imp = grp["imp_iniziale_eur"].sum()
+            sav = grp["saving_eur"].sum()
+            n_ord = len(grp_neg)
+            n_neg = int(grp_neg["negoziazione"].sum())
+            result[m] = {
+                "impegnato": round(imp, 2),
+                "saving": round(sav, 2),
+                "perc_saving": round(sav/imp*100, 2) if imp else 0,
+                "n_ordini": n_ord,
+                "n_negoziati": n_neg,
+                "perc_negoziati": round(n_neg/n_ord*100, 2) if n_ord else 0,
+            }
+        return result
+
+    curr = monthly_kpi(df_curr, anno)
+    prev = monthly_kpi(df_prev, anno_prec)
+
+    MESI = ["Gen","Feb","Mar","Apr","Mag","Giu","Lug","Ago","Set","Ott","Nov","Dic"]
+    chart_data = []
+    for i, nome in enumerate(MESI, 1):
+        c = curr.get(i, {})
+        p = prev.get(i, {})
+        chart_data.append({
+            "mese": nome,
+            "mese_num": i,
+            f"saving_{anno}": c.get("saving", 0),
+            f"saving_{anno_prec}": p.get("saving", 0),
+            f"impegnato_{anno}": c.get("impegnato", 0),
+            f"impegnato_{anno_prec}": p.get("impegnato", 0),
+            f"perc_saving_{anno}": c.get("perc_saving", 0),
+            f"perc_saving_{anno_prec}": p.get("perc_saving", 0),
+            f"n_ordini_{anno}": c.get("n_ordini", 0),
+            f"n_ordini_{anno_prec}": p.get("n_ordini", 0),
+            f"n_negoziati_{anno}": c.get("n_negoziati", 0),
+            f"n_negoziati_{anno_prec}": p.get("n_negoziati", 0),
+        })
+
+    # KPI headline delta
+    def total_kpi(df):
+        if df.empty: return {"impegnato":0,"saving":0,"n_ordini":0}
+        doc_neg = ["OS","OSP","PS","OPR","ORN"]
+        imp = df["imp_iniziale_eur"].sum()
+        sav = df["saving_eur"].sum()
+        n = len(df[df["alfa_documento"].isin(doc_neg)])
+        return {"impegnato":round(imp,2),"saving":round(sav,2),"perc_saving":round(sav/imp*100,2) if imp else 0,"n_ordini":n}
+
+    kpi_curr = total_kpi(df_curr)
+    kpi_prev = total_kpi(df_prev)
+
+    def delta(curr_val, prev_val):
+        if not prev_val: return None
+        return round((curr_val - prev_val) / abs(prev_val) * 100, 1)
+
+    return {
+        "anno": anno,
+        "anno_precedente": anno_prec,
+        "chart_data": chart_data,
+        "kpi_corrente": kpi_curr,
+        "kpi_precedente": kpi_prev,
+        "delta": {
+            "impegnato": delta(kpi_curr["impegnato"], kpi_prev["impegnato"]),
+            "saving": delta(kpi_curr["saving"], kpi_prev["saving"]),
+            "perc_saving": round(kpi_curr["perc_saving"] - kpi_prev["perc_saving"], 2) if kpi_prev["perc_saving"] else None,
+            "n_ordini": delta(kpi_curr["n_ordini"], kpi_prev["n_ordini"]),
+        }
+    }
+
+
+@app.get("/kpi/saving/yoy-cdc")
+def kpi_saving_yoy_cdc(anno: int = Query(...)):
+    """Confronto YoY per CDC"""
+    df_curr = get_saving_df(anno)
+    df_prev = get_saving_df(anno - 1)
+
+    def by_cdc(df):
+        if df.empty: return {}
+        grp = df.groupby("cdc").agg(
+            impegnato=("imp_iniziale_eur","sum"),
+            saving=("saving_eur","sum"),
+            n_ordini=("imp_iniziale_eur","count"),
+        ).reset_index()
+        return {r["cdc"]: r for _, r in grp.iterrows()}
+
+    curr = by_cdc(df_curr)
+    prev = by_cdc(df_prev)
+    all_cdc = sorted(set(list(curr.keys()) + list(prev.keys())))
+
+    result = []
+    for cdc in all_cdc:
+        c = curr.get(cdc, {})
+        p = prev.get(cdc, {})
+        c_imp = float(c.get("impegnato", 0))
+        p_imp = float(p.get("impegnato", 0))
+        c_sav = float(c.get("saving", 0))
+        p_sav = float(p.get("saving", 0))
+        result.append({
+            "cdc": cdc,
+            f"impegnato_{anno}": round(c_imp, 2),
+            f"impegnato_{anno-1}": round(p_imp, 2),
+            f"saving_{anno}": round(c_sav, 2),
+            f"saving_{anno-1}": round(p_sav, 2),
+            "delta_saving_pct": round((c_sav-p_sav)/abs(p_sav)*100,1) if p_sav else None,
+        })
+    return result
+
+
+# ─────────────────────────────────────────────
+# EXPORT — PDF REPORT FORMATTATO
+# ─────────────────────────────────────────────
+
+@app.get("/export/report/pdf")
+def export_report_pdf(
+    anno: int = Query(...),
+    anno_prec: Optional[int] = Query(None),
+    str_ric: Optional[str] = Query(None),
+    cdc: Optional[str] = Query(None),
+    note: Optional[str] = Query(None),
+):
+    """
+    Genera report PDF formattato con KPI, tabelle e confronto YoY.
+    Richiede: pip install reportlab
+    """
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import cm
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.colors import HexColor, white, black, lightgrey
+        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+            Table, TableStyle, HRFlowable, KeepTogether)
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    except ImportError:
+        raise HTTPException(500, "reportlab non installato. Aggiungere 'reportlab' a requirements.txt")
+
+    anno_prec = anno_prec or (anno - 1)
+    BLUE = HexColor("#0057A8")
+    RED = HexColor("#D81E1E")
+    LIGHTBLUE = HexColor("#E8F0FA")
+    GRAY = HexColor("#6b7280")
+    LIGHTGRAY = HexColor("#f3f4f6")
+
+    # Dati
+    df_curr = get_saving_df(anno, str_ric, cdc)
+    df_prev = get_saving_df(anno_prec, str_ric, cdc)
+
+    def kpi_totali(df):
+        if df.empty: return {"impegnato":0,"saving":0,"perc_saving":0,"n_ordini":0,"n_negoziati":0,"perc_negoziati":0,"perc_albo":0}
+        doc_neg = ["OS","OSP","PS","OPR","ORN"]
+        df_neg = df[df["alfa_documento"].isin(doc_neg)]
+        imp = df["imp_iniziale_eur"].sum()
+        sav = df["saving_eur"].sum()
+        n = len(df_neg)
+        nn = int(df_neg["negoziazione"].sum())
+        albo = int(df["accred_albo"].sum())
+        return {"impegnato":round(imp,2),"saving":round(sav,2),
+            "perc_saving":round(sav/imp*100,2) if imp else 0,
+            "n_ordini":n,"n_negoziati":nn,
+            "perc_negoziati":round(nn/n*100,2) if n else 0,
+            "perc_albo":round(albo/len(df)*100,2) if len(df) else 0}
+
+    kc = kpi_totali(df_curr)
+    kp = kpi_totali(df_prev)
+
+    def delta_str(curr_val, prev_val, is_pct=False):
+        if not prev_val: return "n/d"
+        if is_pct:
+            d = round(curr_val - prev_val, 2)
+            return f"{'▲' if d>=0 else '▼'} {abs(d):.1f} pp vs {anno_prec}"
+        d = round((curr_val - prev_val)/abs(prev_val)*100, 1)
+        return f"{'▲' if d>=0 else '▼'} {abs(d):.1f}% vs {anno_prec}"
+
+    def fmt_eur(v):
+        if v >= 1_000_000: return f"€ {v/1_000_000:.2f} M"
+        if v >= 1_000: return f"€ {v/1_000:.1f} K"
+        return f"€ {v:.0f}"
+
+    def fmt_pct(v): return f"{v:.1f}%"
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+        leftMargin=1.5*cm, rightMargin=1.5*cm,
+        topMargin=1.5*cm, bottomMargin=1.5*cm)
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("title", fontSize=20, textColor=BLUE,
+        fontName="Helvetica-Bold", spaceAfter=4)
+    subtitle_style = ParagraphStyle("subtitle", fontSize=10, textColor=GRAY,
+        fontName="Helvetica", spaceAfter=2)
+    section_style = ParagraphStyle("section", fontSize=12, textColor=BLUE,
+        fontName="Helvetica-Bold", spaceBefore=16, spaceAfter=8)
+    body_style = ParagraphStyle("body", fontSize=9, textColor=black,
+        fontName="Helvetica", spaceAfter=4, leading=14)
+    note_style = ParagraphStyle("note", fontSize=9, textColor=GRAY,
+        fontName="Helvetica-Oblique", spaceAfter=4, leading=12)
+    small_style = ParagraphStyle("small", fontSize=8, textColor=GRAY,
+        fontName="Helvetica")
+
+    story = []
+
+    # HEADER
+    area_label = f" — {str_ric}" if str_ric else ""
+    cdc_label = f" — CDC: {cdc}" if cdc else ""
+    story.append(Paragraph(f"Dashboard Ufficio Acquisti{area_label}{cdc_label}", title_style))
+    story.append(Paragraph(f"Report KPI {anno} con confronto {anno_prec} | Fondazione Telethon ETS", subtitle_style))
+    story.append(Paragraph("RISERVATO – USO INTERNO", ParagraphStyle("warn", fontSize=8,
+        textColor=RED, fontName="Helvetica-Bold", spaceAfter=8)))
+    story.append(HRFlowable(width="100%", thickness=2, color=BLUE, spaceAfter=12))
+
+    # KPI HEADLINE TABLE
+    story.append(Paragraph("KPI Principali", section_style))
+
+    kpi_rows = [
+        ["Indicatore", str(anno), str(anno_prec), "Variazione"],
+        ["Impegnato Totale", fmt_eur(kc["impegnato"]), fmt_eur(kp["impegnato"]), delta_str(kc["impegnato"],kp["impegnato"])],
+        ["Saving Generato", fmt_eur(kc["saving"]), fmt_eur(kp["saving"]), delta_str(kc["saving"],kp["saving"])],
+        ["% Saving", fmt_pct(kc["perc_saving"]), fmt_pct(kp["perc_saving"]), delta_str(kc["perc_saving"],kp["perc_saving"],is_pct=True)],
+        ["N° Ordini (OS/OSP/PS)", str(kc["n_ordini"]), str(kp["n_ordini"]), delta_str(kc["n_ordini"],kp["n_ordini"])],
+        ["% Ordini Negoziati", fmt_pct(kc["perc_negoziati"]), fmt_pct(kp["perc_negoziati"]), delta_str(kc["perc_negoziati"],kp["perc_negoziati"],is_pct=True)],
+        ["% Fornitori Albo", fmt_pct(kc["perc_albo"]), fmt_pct(kp["perc_albo"]), delta_str(kc["perc_albo"],kp["perc_albo"],is_pct=True)],
+    ]
+
+    kpi_table = Table(kpi_rows, colWidths=[5.5*cm, 3.5*cm, 3.5*cm, 5*cm])
+    kpi_table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), BLUE),
+        ("TEXTCOLOR", (0,0), (-1,0), white),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("FONTSIZE", (0,0), (-1,-1), 9),
+        ("FONTNAME", (0,1), (0,-1), "Helvetica-Bold"),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [white, LIGHTBLUE]),
+        ("GRID", (0,0), (-1,-1), 0.5, lightgrey),
+        ("ALIGN", (1,0), (-1,-1), "CENTER"),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        ("PADDING", (0,0), (-1,-1), 6),
+    ]))
+    story.append(kpi_table)
+
+    # Commento automatico saving
+    sav_delta = round((kc["saving"]-kp["saving"])/abs(kp["saving"])*100,1) if kp["saving"] else None
+    auto_comment = f"Il saving generato nel {anno} è pari a {fmt_eur(kc['saving'])}"
+    if sav_delta is not None:
+        trend = "superiore" if sav_delta >= 0 else "inferiore"
+        auto_comment += f", {'in crescita' if sav_delta>=0 else 'in calo'} del {abs(sav_delta):.1f}% rispetto al {anno_prec} ({fmt_eur(kp['saving'])})."
+    else:
+        auto_comment += f". Dati {anno_prec} non disponibili per il confronto."
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(f"💬 {auto_comment}", body_style))
+
+    # Nota libera
+    if note:
+        story.append(Paragraph(f"📝 Nota: {note}", note_style))
+
+    story.append(HRFlowable(width="100%", thickness=0.5, color=lightgrey, spaceBefore=12, spaceAfter=12))
+
+    # BREAKDOWN PER CDC
+    if not df_curr.empty and "cdc" in df_curr.columns:
+        story.append(Paragraph("Breakdown per Centro di Costo", section_style))
+        cdc_grp = df_curr.groupby("cdc").agg(
+            impegnato=("imp_iniziale_eur","sum"), saving=("saving_eur","sum"),
+            n_ordini=("imp_iniziale_eur","count")).reset_index().sort_values("impegnato",ascending=False)
+
+        cdc_rows = [["CDC","Impegnato","Saving","% Saving","N° Ordini"]]
+        for _, r in cdc_grp.iterrows():
+            imp = float(r["impegnato"]); sav = float(r["saving"])
+            cdc_rows.append([r["cdc"], fmt_eur(imp), fmt_eur(sav),
+                fmt_pct(sav/imp*100 if imp else 0), str(int(r["n_ordini"]))])
+
+        cdc_table = Table(cdc_rows, colWidths=[3.5*cm,4*cm,4*cm,3*cm,3*cm])
+        cdc_table.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),BLUE),("TEXTCOLOR",(0,0),(-1,0),white),
+            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),9),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),[white,LIGHTBLUE]),
+            ("GRID",(0,0),(-1,-1),0.5,lightgrey),
+            ("ALIGN",(1,0),(-1,-1),"CENTER"),("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+            ("PADDING",(0,0),(-1,-1),5),
+        ]))
+        story.append(cdc_table)
+        story.append(HRFlowable(width="100%",thickness=0.5,color=lightgrey,spaceBefore=12,spaceAfter=12))
+
+    # TOP FORNITORI
+    if not df_curr.empty:
+        story.append(Paragraph("Top 10 Fornitori per Saving", section_style))
+        forn = df_curr.groupby("ragione_sociale").agg(
+            impegnato=("imp_iniziale_eur","sum"), saving=("saving_eur","sum"),
+            n_ordini=("imp_iniziale_eur","count")).reset_index()
+        forn["perc"] = (forn["saving"]/forn["impegnato"]*100).fillna(0)
+        top10 = forn.nlargest(10,"saving")
+
+        forn_rows = [["Fornitore","Impegnato","Saving","% Saving","N° Ordini"]]
+        for _, r in top10.iterrows():
+            nome = str(r["ragione_sociale"])[:40]+"…" if len(str(r["ragione_sociale"]))>40 else str(r["ragione_sociale"])
+            forn_rows.append([nome, fmt_eur(float(r["impegnato"])), fmt_eur(float(r["saving"])),
+                fmt_pct(float(r["perc"])), str(int(r["n_ordini"]))])
+
+        forn_table = Table(forn_rows, colWidths=[6.5*cm,3.5*cm,3.5*cm,2.5*cm,2*cm])
+        forn_table.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),BLUE),("TEXTCOLOR",(0,0),(-1,0),white),
+            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),8),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),[white,LIGHTBLUE]),
+            ("GRID",(0,0),(-1,-1),0.5,lightgrey),
+            ("ALIGN",(1,0),(-1,-1),"CENTER"),("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+            ("PADDING",(0,0),(-1,-1),5),
+        ]))
+        story.append(forn_table)
+
+    # FOOTER
+    story.append(Spacer(1, 20))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=lightgrey))
+    from datetime import datetime
+    story.append(Paragraph(
+        f"Generato il {datetime.now().strftime('%d/%m/%Y %H:%M')} — Fondazione Telethon ETS — Ufficio Acquisti — Uso interno riservato",
+        small_style))
+
+    doc.build(story)
+    buf.seek(0)
+    filename = f"report_acquisti_{anno}.pdf"
+    return StreamingResponse(buf, media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"})
