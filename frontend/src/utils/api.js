@@ -31,6 +31,8 @@ export const api = {
   ncMensile:        ()     => apiFetch('/kpi/nc/mensile'),
   ncTopFornitori:   ()     => apiFetch('/kpi/nc/top-fornitori'),
   ncPerTipo:        ()     => apiFetch('/kpi/nc/per-tipo'),
+  // Anni disponibili
+  anniDisponibili: () => apiFetch('/kpi/saving/anni'),
   // Upload
   uploadLog:        ()     => apiFetch('/upload/log'),
   deleteUpload:     (id)   => apiFetch(`/upload/${id}`, { method: 'DELETE' }),
