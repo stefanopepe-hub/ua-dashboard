@@ -1,28 +1,33 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { useKpi } from '../hooks/useKpi'
+import { useAnni } from '../hooks/useAnni'
 import { api } from '../utils/api'
 import { fmtEur, fmtPct, fmtNum, fmtDays, COLORS, CDC_COLORS } from '../utils/fmt'
 import { KpiCard, FilterBar, LoadingBox, ErrorBox, SectionTitle } from '../components/UI'
 import { YoyBarChart, YoyLineChart, YoyComment, DeltaBadge } from '../components/YoyChart'
 import { ExportBar } from '../components/PrintButton'
-import { Euro, TrendingUp, Users, Clock, AlertTriangle, ShoppingCart } from 'lucide-react'
+import { Clock, AlertTriangle, ShoppingCart } from 'lucide-react'
 
 export default function Riepilogo() {
-  const [anno, setAnno] = useState('2025')
+  const { anni, defaultAnno } = useAnni()
+  const [anno, setAnno] = useState('')
   const [strRic, setStrRic] = useState('')
   const [note, setNote] = useState('')
 
-  const annoInt = parseInt(anno) || 2025
+  // Imposta anno di default appena gli anni sono disponibili
+  useEffect(() => { if (!anno && defaultAnno) setAnno(defaultAnno) }, [defaultAnno])
+
+  const annoInt = parseInt(anno) || new Date().getFullYear()
+  const ap = annoInt - 1
   const params = { anno, str_ric: strRic }
 
   const { data: riepilogo, loading: l1, error: e1 } = useKpi(() => api.savingRiepilogo(params), [anno, strRic])
-  const { data: yoy, loading: l2 } = useKpi(() => api.savingYoy({ anno: annoInt, str_ric: strRic }), [anno, strRic])
+  const { data: yoy, loading: l2 } = useKpi(() => anno ? api.savingYoy({ anno: annoInt, str_ric: strRic }) : Promise.resolve(null), [anno, strRic])
   const { data: cdc, loading: l3 } = useKpi(() => api.savingPerCdc({ anno }), [anno])
   const { data: tempiR } = useKpi(() => api.tempiRiepilogo(), [])
   const { data: ncR } = useKpi(() => api.ncRiepilogo(), [])
 
-  const ap = annoInt - 1
   const chart = yoy?.chart_data || []
   const delta = yoy?.delta || {}
   const kc = yoy?.kpi_corrente || {}
@@ -31,20 +36,16 @@ export default function Riepilogo() {
   const cdcChart = (cdc || []).filter(d => d.cdc)
     .map(d => ({ name: d.cdc, value: Math.round(d.impegnato / 1000) }))
 
-  // Commento automatico saving
   const autoComment = (() => {
-    if (!yoy) return ''
-    const sav = kc.saving || 0
-    const savP = kp.saving || 0
+    if (!yoy || !kc.saving) return ''
     const d = delta.saving
-    const base = `Saving ${anno}: ${fmtEur(sav)}`
-    if (d != null) return `${base} — ${d >= 0 ? 'in crescita' : 'in calo'} del ${Math.abs(d).toFixed(1)}% rispetto al ${ap} (${fmtEur(savP)}).`
-    return `${base}. Dati ${ap} non disponibili.`
+    const base = `Saving ${anno}: ${fmtEur(kc.saving)}`
+    if (d != null) return `${base} — ${d >= 0 ? 'in crescita' : 'in calo'} del ${Math.abs(d).toFixed(1)}% rispetto al ${ap} (${fmtEur(kp.saving || 0)}).`
+    return `${base}. Dati ${ap} non ancora caricati.`
   })()
 
   return (
     <div className="space-y-6 print:space-y-4">
-      {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Dashboard Ufficio Acquisti</h1>
@@ -53,7 +54,7 @@ export default function Riepilogo() {
         <ExportBar anno={anno} strRic={strRic} note={note} />
       </div>
 
-      <FilterBar anno={anno} setAnno={setAnno} strRic={strRic} setStrRic={setStrRic} />
+      <FilterBar anno={anno} setAnno={setAnno} strRic={strRic} setStrRic={setStrRic} anni={anni} />
       {e1 && <ErrorBox message={e1} />}
 
       {/* KPI Cards con delta YoY */}
@@ -84,7 +85,6 @@ export default function Riepilogo() {
         </div>
       )}
 
-      {/* Tempi + NC secondari */}
       {(tempiR || ncR) && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {tempiR && <>
@@ -98,66 +98,38 @@ export default function Riepilogo() {
         </div>
       )}
 
-      {/* Commento YoY */}
-      {yoy && (
-        <YoyComment autoText={autoComment} note={note} onNoteChange={setNote} />
-      )}
+      {autoComment && <YoyComment autoText={autoComment} note={note} onNoteChange={setNote} />}
 
-      {/* Grafico saving YoY */}
       <div className="card">
         <SectionTitle>Saving Mensile — {anno} vs {ap} (€K)</SectionTitle>
         {l2 ? <LoadingBox /> : (
           <YoyBarChart
-            data={chart.map(d => ({
-              ...d,
-              [`saving ${anno} €K`]: Math.round((d[`saving_${anno}`]||0)/1000),
-              [`saving ${ap} €K`]: Math.round((d[`saving_${ap}`]||0)/1000),
-            }))}
-            dataKey1={`saving ${anno} €K`}
-            dataKey2={`saving ${ap} €K`}
-            label1={String(anno)}
-            label2={String(ap)}
-            formatter={v => `€${v}K`}
+            data={chart.map(d => ({...d, [`${anno} €K`]: Math.round((d[`saving_${annoInt}`]||0)/1000), [`${ap} €K`]: Math.round((d[`saving_${ap}`]||0)/1000)}))}
+            dataKey1={`${anno} €K`} dataKey2={`${ap} €K`}
+            label1={String(anno)} label2={String(ap)} formatter={v=>`€${v}K`}
           />
         )}
       </div>
 
-      {/* % Saving YoY */}
       <div className="card">
         <SectionTitle>% Saving Mensile — {anno} vs {ap}</SectionTitle>
         {l2 ? <LoadingBox /> : (
           <YoyLineChart
-            data={chart.map(d => ({
-              ...d,
-              [`% ${anno}`]: d[`perc_saving_${anno}`]||0,
-              [`% ${ap}`]: d[`perc_saving_${ap}`]||0,
-            }))}
-            dataKey1={`% ${anno}`}
-            dataKey2={`% ${ap}`}
-            label1={String(anno)}
-            label2={String(ap)}
-            formatter={v => fmtPct(v)}
-            unit="%"
+            data={chart.map(d => ({...d, [`% ${anno}`]: d[`perc_saving_${annoInt}`]||0, [`% ${ap}`]: d[`perc_saving_${ap}`]||0}))}
+            dataKey1={`% ${anno}`} dataKey2={`% ${ap}`}
+            label1={String(anno)} label2={String(ap)} formatter={v=>fmtPct(v)} unit="%"
           />
         )}
       </div>
 
-      {/* Impegnato YoY */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="card lg:col-span-2">
           <SectionTitle>Impegnato Mensile — {anno} vs {ap} (€K)</SectionTitle>
           {l2 ? <LoadingBox /> : (
             <YoyBarChart
-              data={chart.map(d => ({
-                ...d,
-                [`${anno} €K`]: Math.round((d[`impegnato_${anno}`]||0)/1000),
-                [`${ap} €K`]: Math.round((d[`impegnato_${ap}`]||0)/1000),
-              }))}
-              dataKey1={`${anno} €K`}
-              dataKey2={`${ap} €K`}
-              label1={String(anno)}
-              label2={String(ap)}
-              formatter={v => `€${v}K`}
+              data={chart.map(d => ({...d, [`${anno} €K`]: Math.round((d[`impegnato_${annoInt}`]||0)/1000), [`${ap} €K`]: Math.round((d[`impegnato_${ap}`]||0)/1000)}))}
+              dataKey1={`${anno} €K`} dataKey2={`${ap} €K`}
+              label1={String(anno)} label2={String(ap)} formatter={v=>`€${v}K`}
             />
           )}
         </div>
@@ -168,9 +140,9 @@ export default function Riepilogo() {
               <PieChart>
                 <Pie data={cdcChart} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={75}
                   label={({name,percent})=>`${name} ${(percent*100).toFixed(0)}%`} labelLine={false}>
-                  {cdcChart.map((e,i) => <Cell key={i} fill={CDC_COLORS[e.name]||COLORS.gray}/>)}
+                  {cdcChart.map((e,i)=><Cell key={i} fill={CDC_COLORS[e.name]||COLORS.gray}/>)}
                 </Pie>
-                <Tooltip formatter={v => [`€${v}K`]}/>
+                <Tooltip formatter={v=>[`€${v}K`]}/>
               </PieChart>
             </ResponsiveContainer>
           )}
