@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { useKpi } from '../hooks/useKpi'
+import { useAnni } from '../hooks/useAnni'
 import { api } from '../utils/api'
 import { fmtEur, fmtPct, fmtNum, COLORS, CDC_COLORS } from '../utils/fmt'
 import { KpiCard, FilterBar, LoadingBox, ErrorBox, SectionTitle, DataTable, Badge } from '../components/UI'
@@ -8,7 +9,9 @@ import { YoyBarChart, YoyLineChart, YoyComment, DeltaBadge } from '../components
 import { ExportBar } from '../components/PrintButton'
 
 export default function Saving() {
-  const [anno, setAnno] = useState('2025')
+  const { anni, defaultAnno } = useAnni()
+  const [anno, setAnno] = useState('')
+  useEffect(() => { if (!anno && defaultAnno) setAnno(defaultAnno) }, [defaultAnno])
   const [strRic, setStrRic] = useState('')
   const [cdc, setCdc] = useState('')
   const [topPer, setTopPer] = useState('saving')
