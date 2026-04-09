@@ -1489,3 +1489,336 @@ def health():
             "/kpi/saving/per-buyer","/kpi/saving/per-alfa-documento","/kpi/saving/per-macro-categoria",
             "/kpi/saving/per-commessa","/kpi/saving/yoy","/report/build",
             "/export/custom/excel","/export/custom/pdf","/filtri/disponibili"]}
+
+
+# ─────────────────────────────────────────────
+# YoY CORRETTO — confronto periodo omogeneo
+# ─────────────────────────────────────────────
+
+@app.get("/kpi/saving/periodo-disponibile")
+def periodo_disponibile(anno: int = Query(...)):
+    """
+    Restituisce il primo e ultimo mese disponibile per un anno.
+    Usato dal frontend per comunicare il periodo di confronto.
+    """
+    sb = get_supabase()
+    rows = sb.table("saving").select("data_doc").gte("data_doc", f"{anno}-01-01").lte("data_doc", f"{anno}-12-31").execute().data
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return {"anno": anno, "mese_min": None, "mese_max": None, "n_mesi": 0, "ultima_data": None}
+    df["data_doc"] = pd.to_datetime(df["data_doc"])
+    return {
+        "anno": anno,
+        "mese_min": int(df["data_doc"].dt.month.min()),
+        "mese_max": int(df["data_doc"].dt.month.max()),
+        "n_mesi": int(df["data_doc"].dt.month.nunique()),
+        "ultima_data": df["data_doc"].max().date().isoformat(),
+        "primo_giorno_ultimo_mese": int(df[df["data_doc"].dt.month == df["data_doc"].dt.month.max()]["data_doc"].dt.day.min()),
+        "ultimo_giorno_ultimo_mese": int(df[df["data_doc"].dt.month == df["data_doc"].dt.month.max()]["data_doc"].dt.day.max()),
+    }
+
+
+@app.get("/kpi/saving/yoy-omogeneo")
+def kpi_yoy_omogeneo(
+    anno: int = Query(...),
+    str_ric: Optional[str] = Query(None),
+    cdc: Optional[str] = Query(None),
+):
+    """
+    Confronto YoY su periodo omogeneo:
+    - Rileva automaticamente i mesi disponibili per l'anno corrente
+    - Se l'ultimo mese è parziale (ultimo giorno < 20), escludilo dal confronto KPI headline
+    - Confronta con lo stesso periodo dell'anno precedente
+    - I grafici mensili mostrano mese-per-mese con nota sul periodo
+    """
+    ap = anno - 1
+
+    # Rileva periodo anno corrente
+    sb = get_supabase()
+    rows_curr = sb.table("saving").select("data_doc").gte("data_doc", f"{anno}-01-01").lte("data_doc", f"{anno}-12-31").execute().data
+    df_curr_dates = pd.DataFrame(rows_curr)
+
+    if df_curr_dates.empty:
+        return {"anno": anno, "anno_precedente": ap, "periodo": None, "chart_data": [], "kpi_corrente": calc_kpi(pd.DataFrame()), "kpi_precedente": calc_kpi(pd.DataFrame()), "delta": {}}
+
+    df_curr_dates["data_doc"] = pd.to_datetime(df_curr_dates["data_doc"])
+    mese_max = int(df_curr_dates["data_doc"].dt.month.max())
+    ultimo_giorno = int(df_curr_dates["data_doc"][df_curr_dates["data_doc"].dt.month == mese_max].dt.day.max())
+
+    # Mese parziale: ultimo giorno < 20 → escludi dal confronto KPI headline
+    mese_confronto = mese_max - 1 if ultimo_giorno < 20 and mese_max > 1 else mese_max
+    ultima_data = df_curr_dates["data_doc"].max().date().isoformat()
+
+    # Carica dati anno corrente e precedente con filtri
+    cols = "data_doc,imp_iniziale_eur,saving_eur,negoziazione,alfa_documento,accred_albo"
+    df_c = query_saving(anno, str_ric, cdc, cols=cols)
+    df_p = query_saving(ap, str_ric, cdc, cols=cols)
+
+    if not df_c.empty:
+        df_c["mese_num"] = df_c["data_doc"].dt.month
+    if not df_p.empty:
+        df_p["mese_num"] = df_p["data_doc"].dt.month
+
+    # KPI headline: solo mesi interi (fino a mese_confronto)
+    df_c_kpi = df_c[df_c["mese_num"] <= mese_confronto] if not df_c.empty else df_c
+    df_p_kpi = df_p[df_p["mese_num"] <= mese_confronto] if not df_p.empty else df_p
+
+    kc = calc_kpi(df_c_kpi)
+    kp = calc_kpi(df_p_kpi)
+
+    # Delta
+    def d(c, p):
+        return round((c - p) / abs(p) * 100, 1) if p else None
+
+    # Grafici mensili: mese-per-mese (tutti i mesi disponibili)
+    MESI = ["Gen","Feb","Mar","Apr","Mag","Giu","Lug","Ago","Set","Ott","Nov","Dic"]
+    chart = []
+    for i, nome in enumerate(MESI, 1):
+        c_grp = df_c[df_c["mese_num"] == i] if not df_c.empty else pd.DataFrame()
+        p_grp = df_p[df_p["mese_num"] == i] if not df_p.empty else pd.DataFrame()
+        c_kpi = calc_kpi(c_grp)
+        p_kpi = calc_kpi(p_grp)
+        chart.append({
+            "mese": nome,
+            "mese_num": i,
+            "ha_dati_curr": len(c_grp) > 0,
+            "ha_dati_prev": len(p_grp) > 0,
+            "parziale": i == mese_max and ultimo_giorno < 20,
+            f"saving_{anno}":      c_kpi["saving"],
+            f"saving_{ap}":        p_kpi["saving"],
+            f"impegnato_{anno}":   c_kpi["impegnato"],
+            f"impegnato_{ap}":     p_kpi["impegnato"],
+            f"perc_saving_{anno}": c_kpi["perc_saving"],
+            f"perc_saving_{ap}":   p_kpi["perc_saving"],
+            f"n_ordini_{anno}":    c_kpi["n_doc_neg"],
+            f"n_ordini_{ap}":      p_kpi["n_doc_neg"],
+            f"n_negoziati_{anno}": c_kpi["n_negoziati"],
+            f"n_negoziati_{ap}":   p_kpi["n_negoziati"],
+        })
+
+    mesi_it = {1:"gennaio",2:"febbraio",3:"marzo",4:"aprile",5:"maggio",
+               6:"giugno",7:"luglio",8:"agosto",9:"settembre",10:"ottobre",
+               11:"novembre",12:"dicembre"}
+
+    return {
+        "anno": anno,
+        "anno_precedente": ap,
+        "periodo": {
+            "mese_min": 1,
+            "mese_max": mese_max,
+            "mese_confronto": mese_confronto,
+            "ultimo_giorno": ultimo_giorno,
+            "ultima_data": ultima_data,
+            "label_curr": f"Gen–{MESI[mese_confronto-1]} {anno}",
+            "label_prev": f"Gen–{MESI[mese_confronto-1]} {ap}",
+            "nota": f"Confronto KPI su mesi interi (Gen–{mesi_it[mese_confronto]}). Aprile {anno} è parziale (dati fino al {ultimo_giorno})." if ultimo_giorno < 20 and mese_max == 4 else f"Dati {anno} disponibili fino al {ultima_data}."
+        },
+        "chart_data": chart,
+        "kpi_corrente": kc,
+        "kpi_precedente": kp,
+        "delta": {
+            "impegnato":      d(kc["impegnato"], kp["impegnato"]),
+            "saving":         d(kc["saving"], kp["saving"]),
+            "perc_saving":    round(kc["perc_saving"] - kp["perc_saving"], 2) if kp["perc_saving"] else None,
+            "n_ordini":       d(kc["n_doc_neg"], kp["n_doc_neg"]),
+            "perc_negoziati": round(kc["perc_negoziati"] - kp["perc_negoziati"], 2) if kp["perc_negoziati"] else None,
+        }
+    }
+
+
+@app.get("/kpi/saving/mensile-con-area")
+def kpi_mensile_con_area(
+    anno: Optional[int] = Query(None),
+    cdc: Optional[str] = Query(None),
+):
+    """
+    Andamento mensile segmentato per area (RICERCA / STRUTTURA).
+    Usato per i grafici mensili con breakdown.
+    """
+    cols = "data_doc,str_ric,cdc,imp_iniziale_eur,saving_eur,negoziazione,alfa_documento,accred_albo"
+    df = query_saving(anno, cdc=cdc, cols=cols)
+    if df.empty:
+        return []
+
+    df["mese"] = df["data_doc"].dt.strftime("%Y-%m")
+    MESI_LABEL = {f"{anno}-{m:02d}": ["Gen","Feb","Mar","Apr","Mag","Giu","Lug","Ago","Set","Ott","Nov","Dic"][m-1] for m in range(1,13)} if anno else {}
+
+    result = []
+    for mese, grp in df.groupby("mese"):
+        kpi_tot = calc_kpi(grp)
+        kpi_ric = calc_kpi(grp[grp["str_ric"] == "RICERCA"])
+        kpi_str = calc_kpi(grp[grp["str_ric"] == "STRUTTURA"])
+        result.append({
+            "mese": mese,
+            "label": MESI_LABEL.get(mese, mese),
+            **{f"tot_{k}": v for k,v in kpi_tot.items()},
+            **{f"ric_{k}": v for k,v in kpi_ric.items()},
+            **{f"str_{k}": v for k,v in kpi_str.items()},
+        })
+    return sorted(result, key=lambda x: x["mese"])
+
+
+# ─────────────────────────────────────────────
+# YoY MULTI-GRANULARITÀ
+# ─────────────────────────────────────────────
+
+GRANULARITA_MAP = {
+    "mensile":    [(m, m,   f"M{m:02d}") for m in range(1, 13)],
+    "bimestrale": [(1,2,"B1"),(3,4,"B2"),(5,6,"B3"),(7,8,"B4"),(9,10,"B5"),(11,12,"B6")],
+    "quarter":    [(1,3,"Q1"),(4,6,"Q2"),(7,9,"Q3"),(10,12,"Q4")],
+    "semestrale": [(1,6,"S1"),(7,12,"S2")],
+    "annuale":    [(1,12,"Anno")],
+}
+
+MESI_IT = {1:"Gen",2:"Feb",3:"Mar",4:"Apr",5:"Mag",6:"Giu",
+           7:"Lug",8:"Ago",9:"Set",10:"Ott",11:"Nov",12:"Dic"}
+
+@app.get("/kpi/saving/yoy-granulare")
+def kpi_yoy_granulare(
+    anno: int = Query(...),
+    granularita: str = Query("mensile", description="mensile|bimestrale|quarter|semestrale|annuale"),
+    str_ric: Optional[str] = Query(None),
+    cdc: Optional[str] = Query(None),
+):
+    """
+    Confronto YoY con granularità selezionabile.
+    Mostra solo periodi con dati in almeno uno dei due anni.
+    Segnala i periodi parziali (dove l'anno corrente non ha il mese completo).
+    """
+    ap = anno - 1
+    periodi = GRANULARITA_MAP.get(granularita, GRANULARITA_MAP["mensile"])
+
+    cols = "data_doc,imp_iniziale_eur,saving_eur,negoziazione,alfa_documento,accred_albo"
+    df_c = query_saving(anno, str_ric, cdc, cols=cols)
+    df_p = query_saving(ap,   str_ric, cdc, cols=cols)
+
+    if not df_c.empty: df_c["mese_n"] = df_c["data_doc"].dt.month
+    if not df_p.empty: df_p["mese_n"] = df_p["data_doc"].dt.month
+
+    # Ultimo mese/giorno disponibile anno corrente
+    mese_max_curr = int(df_c["mese_n"].max()) if not df_c.empty else 0
+    ultimo_giorno = int(df_c[df_c["mese_n"] == mese_max_curr]["data_doc"].dt.day.max()) if not df_c.empty and mese_max_curr else 0
+
+    chart = []
+    for m_start, m_end, label in periodi:
+        mask_c = (df_c["mese_n"] >= m_start) & (df_c["mese_n"] <= m_end) if not df_c.empty else pd.Series([], dtype=bool)
+        mask_p = (df_p["mese_n"] >= m_start) & (df_p["mese_n"] <= m_end) if not df_p.empty else pd.Series([], dtype=bool)
+
+        grp_c = df_c[mask_c] if not df_c.empty else pd.DataFrame()
+        grp_p = df_p[mask_p] if not df_p.empty else pd.DataFrame()
+
+        ha_dati_c = len(grp_c) > 0
+        ha_dati_p = len(grp_p) > 0
+
+        if not ha_dati_c and not ha_dati_p:
+            continue  # salta periodi senza dati in nessuno dei due anni
+
+        # Parziale: l'anno corrente non copre tutto il periodo
+        parziale = ha_dati_c and mese_max_curr < m_end
+        parziale_label = ""
+        if parziale:
+            if granularita == "mensile":
+                parziale_label = f"(dati fino al {ultimo_giorno})"
+            else:
+                mesi_coperti = [MESI_IT[m] for m in range(m_start, min(mese_max_curr, m_end)+1)]
+                parziale_label = f"(solo {', '.join(mesi_coperti)})"
+
+        kc = calc_kpi(grp_c)
+        kp = calc_kpi(grp_p)
+
+        # Label leggibile
+        if granularita == "mensile":
+            label_full = MESI_IT.get(m_start, label)
+        elif granularita == "bimestrale":
+            label_full = f"{MESI_IT[m_start]}–{MESI_IT[m_end]}"
+        elif granularita == "quarter":
+            label_full = label
+        elif granularita == "semestrale":
+            label_full = f"{label} ({MESI_IT[m_start]}–{MESI_IT[m_end]})"
+        else:
+            label_full = str(anno)
+
+        def d(c, p):
+            return round((c-p)/abs(p)*100, 1) if p else None
+
+        chart.append({
+            "label":       label_full,
+            "periodo":     label,
+            "m_start":     m_start,
+            "m_end":       m_end,
+            "parziale":    parziale,
+            "parziale_label": parziale_label,
+            "ha_dati_curr": ha_dati_c,
+            "ha_dati_prev": ha_dati_p,
+            # Anno corrente
+            f"saving_{anno}":      kc["saving"],
+            f"impegnato_{anno}":   kc["impegnato"],
+            f"perc_saving_{anno}": kc["perc_saving"],
+            f"n_ordini_{anno}":    kc["n_doc_neg"],
+            f"n_neg_{anno}":       kc["n_negoziati"],
+            # Anno precedente
+            f"saving_{ap}":        kp["saving"],
+            f"impegnato_{ap}":     kp["impegnato"],
+            f"perc_saving_{ap}":   kp["perc_saving"],
+            f"n_ordini_{ap}":      kp["n_doc_neg"],
+            f"n_neg_{ap}":         kp["n_negoziati"],
+            # Delta (solo se non parziale)
+            "delta_saving":      d(kc["saving"],   kp["saving"])   if not parziale else None,
+            "delta_impegnato":   d(kc["impegnato"],kp["impegnato"]) if not parziale else None,
+            "delta_perc_saving": round(kc["perc_saving"]-kp["perc_saving"],2) if kp["perc_saving"] and not parziale else None,
+        })
+
+    # KPI headline: solo periodi NON parziali
+    periodi_interi = [r for r in chart if not r["parziale"] and r["ha_dati_curr"] and r["ha_dati_prev"]]
+    if periodi_interi:
+        mesi_interi = set()
+        for r in periodi_interi:
+            for m in range(r["m_start"], r["m_end"]+1):
+                mesi_interi.add(m)
+        mask_kc = df_c["mese_n"].isin(mesi_interi) if not df_c.empty else pd.Series([], dtype=bool)
+        mask_kp = df_p["mese_n"].isin(mesi_interi) if not df_p.empty else pd.Series([], dtype=bool)
+        kc_hl = calc_kpi(df_c[mask_kc] if not df_c.empty else pd.DataFrame())
+        kp_hl = calc_kpi(df_p[mask_kp] if not df_p.empty else pd.DataFrame())
+    else:
+        kc_hl = calc_kpi(df_c)
+        kp_hl = calc_kpi(df_p)
+
+    def d(c, p): return round((c-p)/abs(p)*100, 1) if p else None
+
+    # Nota periodo
+    if mese_max_curr < 12 and not df_c.empty:
+        label_curr = f"Gen–{MESI_IT[mese_max_curr]} {anno}"
+        label_prev = f"Gen–{MESI_IT[mese_max_curr]} {ap}"
+        nota = f"Dati {anno} disponibili fino al {df_c['data_doc'].max().date().isoformat()}."
+        if ultimo_giorno < 20:
+            mese_confronto = mese_max_curr - 1
+            nota += f" I KPI headline escludono {MESI_IT[mese_max_curr]} (parziale) e confrontano Gen–{MESI_IT[mese_confronto]}."
+            label_curr = f"Gen–{MESI_IT[mese_confronto]} {anno}"
+            label_prev = f"Gen–{MESI_IT[mese_confronto]} {ap}"
+    else:
+        label_curr = f"Anno {anno}"
+        label_prev = f"Anno {ap}"
+        nota = ""
+
+    return {
+        "anno": anno,
+        "anno_precedente": ap,
+        "granularita": granularita,
+        "chart_data": chart,
+        "kpi_headline": {
+            "corrente":  kc_hl,
+            "precedente": kp_hl,
+            "label_curr": label_curr,
+            "label_prev": label_prev,
+            "delta": {
+                "impegnato":      d(kc_hl["impegnato"],   kp_hl["impegnato"]),
+                "saving":         d(kc_hl["saving"],      kp_hl["saving"]),
+                "perc_saving":    round(kc_hl["perc_saving"]-kp_hl["perc_saving"],2) if kp_hl["perc_saving"] else None,
+                "n_ordini":       d(kc_hl["n_doc_neg"],   kp_hl["n_doc_neg"]),
+                "perc_negoziati": round(kc_hl["perc_negoziati"]-kp_hl["perc_negoziati"],2) if kp_hl["perc_negoziati"] else None,
+            }
+        },
+        "nota": nota,
+        "mese_max_curr": mese_max_curr,
+        "ultimo_giorno": ultimo_giorno,
+    }
