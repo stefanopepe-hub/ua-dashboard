@@ -72,7 +72,7 @@ async def upload_saving(file: UploadFile = File(...)):
             "accred_albo": accred,
             "protoc_ordine": float(row["Protoc.ordine"]) if pd.notna(row.get("Protoc.ordine")) else None,
             "protoc_commessa": str(row.get("Protoc.commessa", "")) or None,
-            "grp_merceol": float(row["Grp.merceol."]) if pd.notna(row.get("Grp.merceol.")) else None,
+            "grp_merceol": str(row["Grp.merceol."]) if pd.notna(row.get("Grp.merceol.")) else None,
             "desc_gruppo_merceol": str(row.get("Descrizione gruppo merceologic", "")) or None,
             "centro_di_costo": str(row.get("Centro di costo", "")) or None,
             "desc_cdc": str(row.get("Descrizione centro di costo", "")) or None,
