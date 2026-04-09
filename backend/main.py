@@ -1159,3 +1159,19 @@ def export_report_pdf(
     filename = f"report_acquisti_{anno}.pdf"
     return StreamingResponse(buf, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
+# ─────────────────────────────────────────────
+# UTILITY — ANNI DISPONIBILI
+# ─────────────────────────────────────────────
+
+@app.get("/kpi/saving/anni")
+def get_anni_disponibili():
+    """Restituisce gli anni presenti nel database, ordinati decrescente"""
+    sb = get_supabase()
+    rows = sb.table("saving").select("data_doc").execute().data
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return []
+    anni = sorted(pd.to_datetime(df["data_doc"]).dt.year.unique().tolist(), reverse=True)
+    return [{"anno": int(a)} for a in anni]
