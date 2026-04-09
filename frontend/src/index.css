@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-50 text-gray-900 font-sans antialiased;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-xl border border-gray-100 shadow-sm p-5;
+  }
+  .kpi-card {
+    @apply card flex flex-col gap-1;
+  }
+  .section-title {
+    @apply text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4;
+  }
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+}
