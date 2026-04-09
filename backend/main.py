@@ -52,42 +52,53 @@ async def upload_saving(file: UploadFile = File(...)):
     for _, row in df.iterrows():
         accred = str(row.get("Accred.albo", "NO")).strip().upper() in ("SI", "SÌ")
         neg = str(row.get("Negoziazione", "NO")).strip().upper() in ("SI", "SÌ")
-        data = str(row.get("Data doc.", ""))
         try:
             data_doc = pd.to_datetime(row["Data doc."]).date().isoformat()
         except Exception:
             continue
 
+        def si(v, d=None):
+            try: return int(v) if pd.notna(v) else d
+            except: return d
+        def sf(v, d=0):
+            try: return float(v) if pd.notna(v) else d
+            except: return d
+        def ss(v):
+            try:
+                s = str(v).strip() if pd.notna(v) else None
+                return s if s and s.lower() not in ('nan','none','') else None
+            except: return None
+
         records.append({
             "upload_id": upload_id,
-            "cod_utente": int(row["Cod.utente"]) if pd.notna(row.get("Cod.utente")) else None,
-            "utente": str(row.get("Utente", "")) or None,
-            "num_doc": int(row["Num.doc."]) if pd.notna(row.get("Num.doc.")) else None,
+            "cod_utente": si(row.get("Cod.utente")),
+            "utente": ss(row.get("Utente")),
+            "num_doc": si(row.get("Num.doc.")),
             "data_doc": data_doc,
-            "alfa_documento": str(row.get("Alfa documento", "")) or None,
-            "str_ric": str(row.get("Str./Ric.", "")) or None,
-            "stato_dms": str(row.get("Stato DMS", "")) or None,
-            "codice_fornitore": int(row["Codice fornitore"]) if pd.notna(row.get("Codice fornitore")) else None,
-            "ragione_sociale": str(row.get("Ragione sociale fornitore", "")) or None,
+            "alfa_documento": ss(row.get("Alfa documento")),
+            "str_ric": ss(row.get("Str./Ric.")),
+            "stato_dms": ss(row.get("Stato DMS")),
+            "codice_fornitore": si(row.get("Codice fornitore")),
+            "ragione_sociale": ss(row.get("Ragione sociale fornitore")),
             "accred_albo": accred,
-            "protoc_ordine": float(row["Protoc.ordine"]) if pd.notna(row.get("Protoc.ordine")) else None,
-            "protoc_commessa": str(row.get("Protoc.commessa", "")) or None,
-            "grp_merceol": str(row["Grp.merceol."]) if pd.notna(row.get("Grp.merceol.")) else None,
-            "desc_gruppo_merceol": str(row.get("Descrizione gruppo merceologic", "")) or None,
-            "centro_di_costo": str(row.get("Centro di costo", "")) or None,
-            "desc_cdc": str(row.get("Descrizione centro di costo", "")) or None,
-            "valuta": str(row.get("Valuta", "EURO")) or "EURO",
-            "imp_iniziale": float(row["Imp.iniziale"]) if pd.notna(row.get("Imp.iniziale")) else 0,
-            "imp_negoziato": float(row["Imp.negoziato"]) if pd.notna(row.get("Imp.negoziato")) else 0,
-            "saving_val": float(row["Saving"]) if pd.notna(row.get("Saving")) else 0,
-            "perc_saving": float(row["% Saving"]) if pd.notna(row.get("% Saving")) else 0,
+            "protoc_ordine": sf(row.get("Protoc.ordine"), None),
+            "protoc_commessa": ss(row.get("Protoc.commessa")),
+            "grp_merceol": ss(row.get("Grp.merceol.")),
+            "desc_gruppo_merceol": ss(row.get("Descrizione gruppo merceologic")),
+            "centro_di_costo": ss(row.get("Centro di costo")),
+            "desc_cdc": ss(row.get("Descrizione centro di costo")),
+            "valuta": ss(row.get("Valuta")) or "EURO",
+            "imp_iniziale": sf(row.get("Imp.iniziale")),
+            "imp_negoziato": sf(row.get("Imp.negoziato")),
+            "saving_val": sf(row.get("Saving")),
+            "perc_saving": sf(row.get("% Saving")),
             "negoziazione": neg,
-            "imp_iniziale_eur": float(row["Imp. Iniziale €"]) if pd.notna(row.get("Imp. Iniziale €")) else 0,
-            "imp_negoziato_eur": float(row["Imp. Negoziato €"]) if pd.notna(row.get("Imp. Negoziato €")) else 0,
-            "saving_eur": float(row["Saving.1"]) if pd.notna(row.get("Saving.1")) else 0,
-            "perc_saving_eur": float(row["%saving"]) if pd.notna(row.get("%saving")) else 0,
-            "cdc": str(row.get("CDC ", "")) or None,
-            "cambio": float(row["cambio"]) if pd.notna(row.get("cambio")) else 1,
+            "imp_iniziale_eur": sf(row.get("Imp. Iniziale €")),
+            "imp_negoziato_eur": sf(row.get("Imp. Negoziato €")),
+            "saving_eur": sf(row.get("Saving.1")),
+            "perc_saving_eur": sf(row.get("%saving")),
+            "cdc": ss(row.get("CDC ")),
+            "cambio": sf(row.get("cambio"), 1),
         })
 
     # Batch insert in chunks of 500
