@@ -61,7 +61,7 @@ def ss(v):
         return s if s and s.lower() not in ('nan','none','nat','') else None
     except: return None
 
-def sb(v):
+def to_bool(v):
     return str(v).strip().lower() in ('si','sì','yes','true','1') if pd.notna(v) else False
 
 def sd(v):
@@ -396,7 +396,9 @@ async def upload_saving(
         raise HTTPException(400, f"Errore lettura file: {e}")
 
     df.columns = [c.strip() for c in df.columns]
-    col = build_col_map(df)
+    # Usa sempre un campione di 100 righe per il mapping semantico
+    # (l'intero dataset ha troppi zeri che confondono il rilevamento dei tipi)
+    col = build_col_map(df.head(100))
 
     date_col = col.get("data_doc")
     if not date_col:
@@ -501,7 +503,7 @@ async def upload_saving(
             "stato_dms":            ss(gcol(col,"stato_dms",row)),
             "codice_fornitore":     si(gcol(col,"codice_fornitore",row)),
             "ragione_sociale":      ss(gcol(col,"ragione_sociale",row)),
-            "accred_albo":          sb(gcol(col,"accred_albo",row)),
+            "accred_albo":          to_bool(gcol(col,"accred_albo",row)),
             "protoc_ordine":        sfn(gcol(col,"protoc_ordine",row)),
             "protoc_commessa":      protoc_comm,
             "prefisso_commessa":    pref_comm,
@@ -519,7 +521,7 @@ async def upload_saving(
             "imp_negoziato":        neg_raw,
             "saving_val":           sav_raw,
             "perc_saving":          pct_raw,
-            "negoziazione":         sb(gcol(col,"negoziazione",row)),
+            "negoziazione":         to_bool(gcol(col,"negoziazione",row)),
             "imp_iniziale_eur":     imp_eur,
             "imp_negoziato_eur":    neg_eur,
             "saving_eur":           sav_eur,
@@ -527,12 +529,22 @@ async def upload_saving(
             "tail_spend":           ss(gcol(col,"tail_spend",row)) if has_tail else None,
         })
 
-    # Insert a batch
+    # Insert a batch con gestione errori
     inserted = 0
+    errors = []
     for i in range(0, len(records), 500):
         batch = records[i:i+500]
-        sb.table("saving").insert(batch).execute()
-        inserted += len(batch)
+        try:
+            result = sb.table("saving").insert(batch).execute()
+            inserted += len(batch)
+        except Exception as e:
+            err_msg = str(e)
+            log.error(f"Batch insert error at row {i}: {err_msg[:200]}")
+            errors.append(err_msg[:200])
+            # Se il primo batch fallisce, blocca e riporta l'errore
+            if i == 0:
+                sb.table("upload_log").delete().eq("id", upload_id).execute()
+                raise HTTPException(500, f"Errore inserimento dati: {err_msg[:300]}")
 
     sb.table("upload_log").update({"rows_inserted": inserted}).eq("id", upload_id).execute()
     
@@ -650,7 +662,7 @@ async def upload_nc(file: UploadFile = File(...)):
         "data_prima_fattura":    sd(row.get(col.get("data_prima_fattura",""))),
         "importo_prima_fattura": sfn(row.get(col.get("importo_prima_fattura",""))),
         "delta_giorni":          sfn(row.get(col.get("delta_giorni",""))),
-        "non_conformita":        sb(row.get(col.get("non_conformita",""))),
+        "non_conformita":        to_bool(row.get(col.get("non_conformita",""))),
     } for _,row in df.iterrows()]
     for i in range(0,len(records),500):
         sb.table("non_conformita").insert(records[i:i+500]).execute()
