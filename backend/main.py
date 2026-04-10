@@ -21,6 +21,10 @@ from supabase import create_client
 from dotenv import load_dotenv
 
 # Import dal modulo domain (testabile separatamente)
+from ingestion_engine import (
+    inspect_workbook, mapping_result_to_dict, FileFamily,
+    build_column_map,
+)
 from domain import (
     map_cols, gcol, best_sheet, build_record, calc_kpi,
     validate_mapping, _s, _b, _f, _fn, _i, _d, clean, safe_pct,
@@ -98,6 +102,19 @@ def get_saving_df(anno=None, str_ric=None, cdc=None, alfa=None,
 # ─────────────────────────────────────────────────────────────────
 # UPLOAD — SAVING
 # ─────────────────────────────────────────────────────────────────
+
+@app.post("/upload/inspect")
+async def upload_inspect(file: UploadFile = File(...)):
+    """Ispeziona file senza importare. Ritorna family, confidence, mapping, analisi."""
+    contents = await file.read()
+    try:
+        import io as _io
+        xl = pd.ExcelFile(_io.BytesIO(contents))
+        mr = inspect_workbook(xl)
+        return mapping_result_to_dict(mr)
+    except Exception as e:
+        raise HTTPException(400, f"Errore ispezione: {str(e)[:300]}")
+
 @app.post("/upload/saving")
 async def upload_saving(file: UploadFile = File(...), cdc_override: Optional[str] = None):
     contents = await file.read()
@@ -551,13 +568,21 @@ def kpi_tempi_mensile():
     rows = query("tempo_attraversamento")
     df = pd.DataFrame(rows)
     if df.empty: return []
-    return sorted([{
-        "mese": ym,
-        "avg_total":      round(float(g["total_days"].mean()), 1),
-        "avg_purchasing": round(float(g["days_purchasing"].mean()), 1),
-        "avg_auto":       round(float(g["days_auto"].mean()), 1),
-        "n_ordini":       len(g),
-    } for ym, g in df.groupby("year_month")], key=lambda x: x["mese"])
+    result = []
+    for ym, g in df.groupby("year_month"):
+        n = len(g)
+        result.append({
+            "mese": ym,
+            "avg_total":      round(float(g["total_days"].mean()), 1),
+            "avg_purchasing": round(float(g["days_purchasing"].mean()), 1),
+            "avg_auto":       round(float(g["days_auto"].mean()), 1),
+            "avg_other":      round(float(g["days_other"].mean()), 1) if "days_other" in g.columns else 0,
+            "n_ordini":       n,
+            "n_bottleneck_purchasing": int((g["bottleneck"] == "PURCHASING").sum()) if "bottleneck" in g.columns else 0,
+            "n_bottleneck_auto":       int((g["bottleneck"] == "AUTO").sum()) if "bottleneck" in g.columns else 0,
+            "n_bottleneck_other":      int((g["bottleneck"] == "OTHER").sum()) if "bottleneck" in g.columns else 0,
+        })
+    return sorted(result, key=lambda x: x["mese"])
 
 @app.get("/kpi/tempi/distribuzione")
 def kpi_tempi_dist():
@@ -576,8 +601,11 @@ def kpi_nc():
     df = pd.DataFrame(rows)
     if df.empty: return {}
     n = len(df); nnc = int(df["non_conformita"].sum())
+    df_nc = df[df["non_conformita"] == True]
+    avg_delta_nc = round(float(df_nc["delta_giorni"].mean()), 1) if len(df_nc) > 0 else 0.0
     return {"n_totale": n, "n_nc": nnc, "perc_nc": safe_pct(nnc, n),
-            "avg_delta_giorni": round(float(df["delta_giorni"].mean()), 1)}
+            "avg_delta_giorni": round(float(df["delta_giorni"].mean()), 1),
+            "avg_delta_nc": avg_delta_nc}
 
 @app.get("/kpi/nc/mensile")
 def kpi_nc_mensile():
