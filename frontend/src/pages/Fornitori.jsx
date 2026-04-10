@@ -12,37 +12,40 @@ export default function Fornitori() {
   const [strRic, setStrRic] = useState('')
 
   useEffect(() => {
-    if (!anno && defaultAnno) setAnno(defaultAnno)
+    if (!anno && defaultAnno) setAnno(String(defaultAnno))
   }, [defaultAnno])
 
-  const { data: pareto,       loading: l1, error: e1 } = useKpi(() => anno ? api.savingPareto({ anno, str_ric: strRic }) : Promise.resolve([]), [anno, strRic])
-  const { data: topFornitori, loading: l2, error: e2 } = useKpi(() => anno ? api.savingTopFornitori({ anno, per: 'impegnato', limit: 20, str_ric: strRic }) : Promise.resolve([]), [anno, strRic])
+  const ready = !!anno
 
+  const { data: pareto,        loading: l1, error: e1 } = useKpi(
+    () => ready ? api.pareto({ anno, str_ric: strRic }) : Promise.resolve([]),
+    [anno, strRic]
+  )
+  const { data: topFornitori,  loading: l2, error: e2 } = useKpi(
+    () => ready ? api.topFornitori({ anno, per: 'impegnato', limit: 20, str_ric: strRic }) : Promise.resolve([]),
+    [anno, strRic]
+  )
+
+  const error = e1 || e2
   const soglia80    = pareto?.find(r => r.cum_perc >= 80)?.rank
   const soglia50    = pareto?.find(r => r.cum_perc >= 50)?.rank
   const totFornitori = pareto?.length || 0
-
-  const paretoChart = (pareto || []).slice(0, 60).map(r => ({
+  const paretoChart  = (pareto || []).slice(0, 80).map(r => ({
     rank: r.rank,
     '% Cumulata': r.cum_perc,
   }))
-
-  const error = e1 || e2
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold text-gray-900">Analisi Fornitori</h1>
         <div className="flex gap-3">
-          <select
-            className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-white font-medium focus:outline-none focus:ring-2 focus:ring-telethon-blue"
-            value={anno} onChange={e => setAnno(e.target.value)}>
-            <option value="">Tutti gli anni</option>
+          <select value={anno} onChange={e => setAnno(e.target.value)}
+            className="filter-select font-semibold text-telethon-blue border-2 border-telethon-blue">
+            <option value="">Seleziona anno…</option>
             {anni.map(a => <option key={a} value={String(a)}>{a}</option>)}
           </select>
-          <select
-            className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-telethon-blue"
-            value={strRic} onChange={e => setStrRic(e.target.value)}>
+          <select value={strRic} onChange={e => setStrRic(e.target.value)} className="filter-select">
             <option value="">Ricerca + Struttura</option>
             <option value="RICERCA">Solo Ricerca</option>
             <option value="STRUTTURA">Solo Struttura</option>
@@ -50,28 +53,32 @@ export default function Fornitori() {
         </div>
       </div>
 
+      {!ready && (
+        <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-sm text-blue-700">
+          Seleziona un anno per visualizzare l'analisi fornitori.
+        </div>
+      )}
+
       {error && <ErrorBox message={error} />}
 
       {/* KPI Pareto */}
-      {totFornitori > 0 && (
+      {ready && totFornitori > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <KpiCard label="FORNITORI TOTALI"     value={fmtNum(totFornitori)} sub="nel periodo" color="blue"/>
-          <KpiCard label="COPRONO 50% SPESA"    value={fmtNum(soglia50)}    sub="fornitori" color="orange"/>
-          <KpiCard label="COPRONO 80% SPESA"    value={fmtNum(soglia80)}    sub="regola Pareto" color="red"/>
-          <KpiCard label="TAIL FORNITORI"       value={fmtNum(totFornitori - (soglia80 || 0))} sub="coprono il 20% restante" color="gray"/>
+          <KpiCard label="FORNITORI TOTALI"   value={fmtNum(totFornitori)} sub="nel periodo" color="blue" />
+          <KpiCard label="COPRONO 50% SPESA"  value={fmtNum(soglia50)}    sub="fornitori" color="orange" />
+          <KpiCard label="COPRONO 80% SPESA"  value={fmtNum(soglia80)}    sub="regola Pareto" color="red" />
+          <KpiCard label="TAIL FORNITORI"     value={fmtNum(totFornitori - (soglia80 || 0))} sub="restante 20%" color="gray" />
         </div>
       )}
 
       {/* Curva Pareto */}
       <div className="card">
-        <SectionTitle>Curva Pareto — Concentrazione della Spesa — {anno || 'Tutti gli anni'}</SectionTitle>
+        <SectionTitle>Curva Pareto — Concentrazione della Spesa — {anno}</SectionTitle>
         <p className="text-xs text-gray-500 mb-3">
-          % cumulata della spesa in funzione del numero di fornitori (ordinati per volume decrescente)
+          % cumulata dell'impegnato in funzione del numero di fornitori (ordinati per volume decrescente)
         </p>
-        {l1 ? <LoadingBox /> : paretoChart.length === 0 ? (
-          <div className="flex items-center justify-center h-40 text-sm text-gray-400">
-            Nessun dato disponibile per il periodo selezionato
-          </div>
+        {!ready ? null : l1 ? <LoadingBox /> : paretoChart.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-8">Nessun dato per il periodo selezionato</p>
         ) : (
           <>
             <ResponsiveContainer width="100%" height={280}>
@@ -96,18 +103,16 @@ export default function Fornitori() {
 
       {/* Top 20 */}
       <div className="card">
-        <SectionTitle>Top 20 Fornitori per Volume Acquistato — {anno || 'Tutti gli anni'}</SectionTitle>
-        {l2 ? <LoadingBox /> : (topFornitori || []).length === 0 ? (
-          <div className="flex items-center justify-center h-24 text-sm text-gray-400">
-            Nessun dato disponibile
-          </div>
+        <SectionTitle>Top 20 Fornitori per Volume Acquistato — {anno}</SectionTitle>
+        {!ready ? null : l2 ? <LoadingBox /> : (topFornitori || []).length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-8">Nessun dato disponibile</p>
         ) : (
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100">
-                {['#','Fornitore','Impegnato','Saving','% Saving','N°','Albo'].map(h => (
+                {['#', 'Fornitore', 'Listino', 'Impegnato', 'Saving', '% Saving', 'N°', 'Albo'].map(h => (
                   <th key={h} className={`py-2 px-3 text-xs font-semibold text-gray-500 uppercase
-                    ${h === '#' || h === 'Fornitore' ? 'text-left' : 'text-right'}`}>{h}</th>
+                    ${['#','Fornitore'].includes(h) ? 'text-left' : 'text-right'}`}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -118,7 +123,8 @@ export default function Fornitori() {
                   <td className="py-2 px-3 font-medium max-w-xs">
                     <span className="block truncate" title={r.ragione_sociale}>{r.ragione_sociale}</span>
                   </td>
-                  <td className="py-2 px-3 text-right tabular-nums">{fmtEur(r.impegnato)}</td>
+                  <td className="py-2 px-3 text-right tabular-nums text-gray-500">{fmtEur(r.listino)}</td>
+                  <td className="py-2 px-3 text-right tabular-nums font-medium">{fmtEur(r.impegnato)}</td>
                   <td className="py-2 px-3 text-right tabular-nums text-green-700">{fmtEur(r.saving)}</td>
                   <td className="py-2 px-3 text-right tabular-nums">{fmtPct(r.perc_saving)}</td>
                   <td className="py-2 px-3 text-right">{fmtNum(r.n_righe)}</td>
