@@ -2,20 +2,148 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  :root {
+    --blue:       #0057A8;
+    --blue-light: #E8F0FA;
+    --blue-dark:  #003D7A;
+    --red:        #D81E1E;
+    --green:      #15803d;
+    --green-light:#f0fdf4;
+    --orange:     #ea580c;
+    --amber:      #d97706;
+    --gray-50:    #f9fafb;
+    --gray-100:   #f3f4f6;
+    --gray-200:   #e5e7eb;
+    --gray-400:   #9ca3af;
+    --gray-500:   #6b7280;
+    --gray-700:   #374151;
+    --gray-900:   #111827;
+    --sidebar-w:  240px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: 'Outfit', 'DM Sans', system-ui, sans-serif;
+    background: #f4f6f9;
+    color: var(--gray-900);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1 { @apply text-2xl font-bold tracking-tight; }
+  h2 { @apply text-xl font-semibold; }
+  h3 { @apply text-base font-semibold; }
+}
+
 @layer components {
-  .kpi-card {
+  /* ── Cards ── */
+  .card {
+    @apply bg-white rounded-2xl border border-gray-100 shadow-sm p-6;
+  }
+  .card-sm {
     @apply bg-white rounded-xl border border-gray-100 shadow-sm p-4;
   }
-  .card {
-    @apply bg-white rounded-xl border border-gray-100 shadow-sm p-5;
+
+  /* ── KPI Cards ── */
+  .kpi-card {
+    @apply bg-white rounded-2xl border border-gray-100 shadow-sm p-5 relative overflow-hidden;
   }
-  .filter-select {
-    @apply text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-telethon-blue;
-  }
-  .btn-outline {
-    @apply flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 transition-colors;
-  }
+  .kpi-card-accent-blue  { @apply border-l-4 border-l-[#0057A8]; }
+  .kpi-card-accent-green { @apply border-l-4 border-l-green-500; }
+  .kpi-card-accent-red   { @apply border-l-4 border-l-red-500; }
+  .kpi-card-accent-orange{ @apply border-l-4 border-l-orange-500; }
+  .kpi-card-accent-gray  { @apply border-l-4 border-l-gray-300; }
+
+  /* ── Buttons ── */
   .btn-primary {
-    @apply flex items-center gap-1.5 px-4 py-2 text-sm font-bold bg-telethon-blue text-white rounded-lg hover:opacity-90 disabled:opacity-50 transition-colors;
+    @apply inline-flex items-center gap-2 px-4 py-2 bg-[#0057A8] text-white text-sm font-semibold rounded-xl
+           hover:bg-[#003D7A] transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
   }
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700
+           text-sm font-medium rounded-xl hover:bg-gray-50 transition-colors;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-600
+           hover:bg-gray-100 rounded-lg transition-colors;
+  }
+  .btn-danger {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-600
+           hover:bg-red-50 rounded-lg transition-colors;
+  }
+
+  /* ── Filters ── */
+  .filter-select {
+    @apply text-sm border border-gray-200 rounded-xl px-3 py-2 bg-white text-gray-700
+           focus:outline-none focus:ring-2 focus:ring-[#0057A8]/20 focus:border-[#0057A8]
+           transition-colors cursor-pointer;
+  }
+
+  /* ── Tables ── */
+  .data-table { @apply w-full text-sm; }
+  .data-table thead tr { @apply border-b-2 border-gray-100; }
+  .data-table th {
+    @apply py-3 px-4 text-xs font-bold text-gray-400 uppercase tracking-wider;
+  }
+  .data-table th.right { @apply text-right; }
+  .data-table td { @apply py-3 px-4 border-b border-gray-50; }
+  .data-table tbody tr { @apply hover:bg-gray-50/70 transition-colors; }
+  .data-table .tabular { @apply tabular-nums; }
+
+  /* ── Badges ── */
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+  .badge-blue   { @apply bg-blue-50 text-[#0057A8]; }
+  .badge-green  { @apply bg-green-50 text-green-700; }
+  .badge-red    { @apply bg-red-50 text-red-700; }
+  .badge-orange { @apply bg-orange-50 text-orange-700; }
+  .badge-gray   { @apply bg-gray-100 text-gray-600; }
+  .badge-amber  { @apply bg-amber-50 text-amber-700; }
+
+  /* ── Section headers ── */
+  .section-title {
+    @apply text-xs font-bold text-gray-400 uppercase tracking-widest mb-5;
+  }
+  .page-title {
+    @apply text-2xl font-bold text-gray-900 tracking-tight;
+  }
+  .page-subtitle {
+    @apply text-sm text-gray-500 mt-0.5;
+  }
+
+  /* ── Skeleton ── */
+  .skeleton {
+    @apply bg-gray-100 rounded-lg animate-pulse;
+  }
+
+  /* ── Alerts ── */
+  .alert-info    { @apply flex gap-3 bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-sm text-blue-800; }
+  .alert-warning { @apply flex gap-3 bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 text-sm text-amber-800; }
+  .alert-error   { @apply flex gap-3 bg-red-50 border border-red-100 rounded-xl px-4 py-3 text-sm text-red-700; }
+  .alert-success { @apply flex gap-3 bg-green-50 border border-green-100 rounded-xl px-4 py-3 text-sm text-green-800; }
+
+  /* ── Nav items ── */
+  .nav-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all cursor-pointer;
+  }
+  .nav-item-active { @apply bg-[#E8F0FA] text-[#0057A8] font-semibold; }
+  .nav-item-idle   { @apply text-gray-500 hover:bg-gray-50 hover:text-gray-900; }
+  .nav-section-label {
+    @apply text-[10px] font-bold text-gray-300 uppercase tracking-widest px-3 pt-4 pb-1;
+  }
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #d1d5db; }
+
+/* ── Recharts overrides ── */
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  border-radius: 10px !important;
+  border: 1px solid #e5e7eb !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08) !important;
 }
