@@ -1,97 +1,137 @@
-import { useState } from 'react'
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-} from 'recharts'
+import { useState, useEffect } from 'react'
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { useKpi } from '../hooks/useKpi'
+import { useAnni } from '../hooks/useAnni'
 import { api } from '../utils/api'
 import { fmtEur, fmtPct, fmtNum, COLORS } from '../utils/fmt'
-import { LoadingBox, ErrorBox, SectionTitle, DataTable, Badge, KpiCard } from '../components/UI'
+import { LoadingBox, ErrorBox, SectionTitle, KpiCard } from '../components/UI'
 
 export default function Fornitori() {
-  const [anno, setAnno] = useState('2025')
+  const { anni, defaultAnno } = useAnni()
+  const [anno, setAnno]     = useState('')
   const [strRic, setStrRic] = useState('')
 
-  const {data:pareto,loading:l1,error:e1} = useKpi(()=>api.savingPareto({anno}),[anno])
-  const {data:topFornitori,loading:l2} = useKpi(()=>api.savingTopFornitori({anno,per:'impegnato',limit:20,str_ric:strRic}),[anno,strRic])
+  useEffect(() => {
+    if (!anno && defaultAnno) setAnno(defaultAnno)
+  }, [defaultAnno])
 
-  // Calcola soglia 80%
-  const soglia80 = pareto ? pareto.find(r=>r.cum_perc>=80)?.rank : null
-  const soglia50 = pareto ? pareto.find(r=>r.cum_perc>=50)?.rank : null
-  const totFornitori = pareto?.length
+  const { data: pareto,       loading: l1, error: e1 } = useKpi(() => anno ? api.savingPareto({ anno, str_ric: strRic }) : Promise.resolve([]), [anno, strRic])
+  const { data: topFornitori, loading: l2, error: e2 } = useKpi(() => anno ? api.savingTopFornitori({ anno, per: 'impegnato', limit: 20, str_ric: strRic }) : Promise.resolve([]), [anno, strRic])
 
-  const paretoChart = (pareto||[]).slice(0,50).map(r=>({
+  const soglia80    = pareto?.find(r => r.cum_perc >= 80)?.rank
+  const soglia50    = pareto?.find(r => r.cum_perc >= 50)?.rank
+  const totFornitori = pareto?.length || 0
+
+  const paretoChart = (pareto || []).slice(0, 60).map(r => ({
     rank: r.rank,
     '% Cumulata': r.cum_perc,
   }))
 
+  const error = e1 || e2
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold text-gray-900">Analisi Fornitori</h1>
         <div className="flex gap-3">
-          <select className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-white" value={anno} onChange={e=>setAnno(e.target.value)}>
-            <option value="2025">2025</option>
-            <option value="2024">2024</option>
-            <option value="2023">2023</option>
+          <select
+            className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-white font-medium focus:outline-none focus:ring-2 focus:ring-telethon-blue"
+            value={anno} onChange={e => setAnno(e.target.value)}>
+            <option value="">Tutti gli anni</option>
+            {anni.map(a => <option key={a} value={String(a)}>{a}</option>)}
           </select>
-          <select className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-white" value={strRic} onChange={e=>setStrRic(e.target.value)}>
-            <option value="">Tutti</option>
-            <option value="RICERCA">Ricerca</option>
-            <option value="STRUTTURA">Struttura</option>
+          <select
+            className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-telethon-blue"
+            value={strRic} onChange={e => setStrRic(e.target.value)}>
+            <option value="">Ricerca + Struttura</option>
+            <option value="RICERCA">Solo Ricerca</option>
+            <option value="STRUTTURA">Solo Struttura</option>
           </select>
         </div>
       </div>
 
-      {e1 && <ErrorBox message={e1}/>}
+      {error && <ErrorBox message={error} />}
 
-      {/* Pareto KPI */}
-      {pareto && (
+      {/* KPI Pareto */}
+      {totFornitori > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <KpiCard label="Fornitori Totali" value={fmtNum(totFornitori)} sub="nel periodo" color="blue"/>
-          <KpiCard label="Coprono 50% spesa" value={fmtNum(soglia50)} sub="fornitori" color="orange"/>
-          <KpiCard label="Coprono 80% spesa" value={fmtNum(soglia80)} sub="fornitori (regola Pareto)" color="red"/>
-          <KpiCard label="Tail fornitori" value={fmtNum(totFornitori - soglia80)} sub="coprono il 20% restante" color="gray"/>
+          <KpiCard label="FORNITORI TOTALI"     value={fmtNum(totFornitori)} sub="nel periodo" color="blue"/>
+          <KpiCard label="COPRONO 50% SPESA"    value={fmtNum(soglia50)}    sub="fornitori" color="orange"/>
+          <KpiCard label="COPRONO 80% SPESA"    value={fmtNum(soglia80)}    sub="regola Pareto" color="red"/>
+          <KpiCard label="TAIL FORNITORI"       value={fmtNum(totFornitori - (soglia80 || 0))} sub="coprono il 20% restante" color="gray"/>
         </div>
       )}
 
       {/* Curva Pareto */}
       <div className="card">
-        <SectionTitle>Curva Pareto — Concentrazione della Spesa</SectionTitle>
-        <p className="text-xs text-gray-500 mb-3">Percentuale cumulata della spesa in funzione del numero di fornitori (ordinati per volume decrescente)</p>
-        {l1 ? <LoadingBox/> : (
-          <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={paretoChart} margin={{top:4,right:8,left:0,bottom:0}}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6"/>
-              <XAxis dataKey="rank" tick={{fontSize:11}} label={{value:'N° Fornitori',position:'insideBottom',offset:-2,fontSize:11}}/>
-              <YAxis tick={{fontSize:11}} unit="%" domain={[0,100]}/>
-              <Tooltip formatter={(v)=>[fmtPct(v),'Spesa cumulata']} labelFormatter={v=>`Fornitore #${v}`}/>
-              <Line type="monotone" dataKey="% Cumulata" stroke={COLORS.blue} strokeWidth={2} dot={false}/>
-            </LineChart>
-          </ResponsiveContainer>
-        )}
-        {soglia80 && (
-          <p className="text-xs text-gray-500 mt-2">
-            ⚡ <strong>{soglia80} fornitori</strong> ({fmtPct(soglia80/totFornitori*100)} del parco) coprono l'80% della spesa totale.
-          </p>
+        <SectionTitle>Curva Pareto — Concentrazione della Spesa — {anno || 'Tutti gli anni'}</SectionTitle>
+        <p className="text-xs text-gray-500 mb-3">
+          % cumulata della spesa in funzione del numero di fornitori (ordinati per volume decrescente)
+        </p>
+        {l1 ? <LoadingBox /> : paretoChart.length === 0 ? (
+          <div className="flex items-center justify-center h-40 text-sm text-gray-400">
+            Nessun dato disponibile per il periodo selezionato
+          </div>
+        ) : (
+          <>
+            <ResponsiveContainer width="100%" height={280}>
+              <LineChart data={paretoChart} margin={{ top: 4, right: 8, left: 0, bottom: 16 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                <XAxis dataKey="rank" tick={{ fontSize: 11 }}
+                  label={{ value: 'N° Fornitori', position: 'insideBottom', offset: -8, fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} unit="%" domain={[0, 100]} />
+                <Tooltip formatter={v => [fmtPct(v), 'Spesa cumulata']} labelFormatter={v => `Fornitore #${v}`} />
+                <Line type="monotone" dataKey="% Cumulata" stroke={COLORS.blue} strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+            {soglia80 && (
+              <p className="text-xs text-gray-500 mt-2">
+                ⚡ <strong>{soglia80} fornitori</strong> ({fmtPct(soglia80 / totFornitori * 100)} del parco)
+                coprono l'80% della spesa totale.
+              </p>
+            )}
+          </>
         )}
       </div>
 
-      {/* Top 20 fornitori per volume */}
+      {/* Top 20 */}
       <div className="card">
-        <SectionTitle>Top 20 Fornitori per Volume Acquistato</SectionTitle>
-        {l2 ? <LoadingBox/> : (
-          <DataTable
-            columns={[
-              {key:'ragione_sociale',label:'Fornitore'},
-              {key:'impegnato',label:'Impegnato',render:v=>fmtEur(v)},
-              {key:'saving',label:'Saving',render:v=>fmtEur(v)},
-              {key:'perc_saving',label:'% Saving',render:v=>fmtPct(v)},
-              {key:'n_ordini',label:'N° Ordini',render:v=>fmtNum(v)},
-              {key:'albo',label:'Albo',render:v=><Badge color={v?'green':'gray'}>{v?'✓ SI':'NO'}</Badge>},
-            ]}
-            rows={topFornitori||[]}
-            maxRows={20}
-          />
+        <SectionTitle>Top 20 Fornitori per Volume Acquistato — {anno || 'Tutti gli anni'}</SectionTitle>
+        {l2 ? <LoadingBox /> : (topFornitori || []).length === 0 ? (
+          <div className="flex items-center justify-center h-24 text-sm text-gray-400">
+            Nessun dato disponibile
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-100">
+                {['#','Fornitore','Impegnato','Saving','% Saving','N°','Albo'].map(h => (
+                  <th key={h} className={`py-2 px-3 text-xs font-semibold text-gray-500 uppercase
+                    ${h === '#' || h === 'Fornitore' ? 'text-left' : 'text-right'}`}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(topFornitori || []).map((r, i) => (
+                <tr key={i} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                  <td className="py-2 px-3 text-gray-400 text-xs">{i + 1}</td>
+                  <td className="py-2 px-3 font-medium max-w-xs">
+                    <span className="block truncate" title={r.ragione_sociale}>{r.ragione_sociale}</span>
+                  </td>
+                  <td className="py-2 px-3 text-right tabular-nums">{fmtEur(r.impegnato)}</td>
+                  <td className="py-2 px-3 text-right tabular-nums text-green-700">{fmtEur(r.saving)}</td>
+                  <td className="py-2 px-3 text-right tabular-nums">{fmtPct(r.perc_saving)}</td>
+                  <td className="py-2 px-3 text-right">{fmtNum(r.n_righe)}</td>
+                  <td className="py-2 px-3 text-center">
+                    <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium
+                      ${r.albo ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                      {r.albo ? '✓ SI' : 'NO'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     </div>
