@@ -2,34 +2,20 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  body {
-    @apply bg-gray-50 text-gray-900 font-sans antialiased;
-  }
-}
-
 @layer components {
+  .kpi-card {
+    @apply bg-white rounded-xl border border-gray-100 shadow-sm p-4;
+  }
   .card {
     @apply bg-white rounded-xl border border-gray-100 shadow-sm p-5;
   }
-  .kpi-card {
-    @apply card flex flex-col gap-1;
+  .filter-select {
+    @apply text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-telethon-blue;
   }
-  .section-title {
-    @apply text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4;
+  .btn-outline {
+    @apply flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 transition-colors;
   }
-  .badge {
-    @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+  .btn-primary {
+    @apply flex items-center gap-1.5 px-4 py-2 text-sm font-bold bg-telethon-blue text-white rounded-lg hover:opacity-90 disabled:opacity-50 transition-colors;
   }
-}
-
-/* ── Print styles ── */
-@media print {
-  @page { margin: 1.5cm; size: A4; }
-  body { background: white !important; }
-  aside { display: none !important; }
-  main { padding: 0 !important; }
-  .print\:hidden { display: none !important; }
-  .card { break-inside: avoid; border: 1px solid #e5e7eb !important; box-shadow: none !important; }
-  h1 { font-size: 18pt !important; }
 }
