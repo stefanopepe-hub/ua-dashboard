@@ -1,192 +1,143 @@
 import { useState, useEffect } from 'react'
-import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis,
-  CartesianGrid, Tooltip, ResponsiveContainer, Legend, Cell,
-} from 'recharts'
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Cell } from 'recharts'
 import { useKpi } from '../hooks/useKpi'
 import { useAnni } from '../hooks/useAnni'
 import { api } from '../utils/api'
 import { fmtEur, fmtPct, fmtNum, fmtDays, COLORS, CDC_COLORS } from '../utils/fmt'
-import { KpiCard, FilterBar, LoadingBox, ErrorBox, SectionTitle } from '../components/UI'
-import { DeltaBadge, YoyComment } from '../components/YoyChart'
-import { ExportBar } from '../components/PrintButton'
-import { Clock, AlertTriangle, Info, AlertCircle } from 'lucide-react'
-
-const GRANULARITA_OPTIONS = [
-  { value: 'mensile',    label: 'Mensile' },
-  { value: 'bimestrale', label: 'Bimestrale' },
-  { value: 'quarter',    label: 'Trimestrale (Q)' },
-  { value: 'semestrale', label: 'Semestrale' },
-  { value: 'annuale',    label: 'Annuale' },
-]
-
-// Barra parziale con pattern tratteggiato
-const CustomBar = (props) => {
-  const { x, y, width, height, parziale, fill } = props
-  if (!height || height <= 0) return null
-  if (parziale) {
-    return (
-      <g>
-        <defs>
-          <pattern id="parziale-pattern" patternUnits="userSpaceOnUse" width="6" height="6">
-            <path d="M-1,1 l2,-2 M0,6 l6,-6 M5,7 l2,-2" stroke={fill} strokeWidth="1.5" opacity="0.6"/>
-          </pattern>
-        </defs>
-        <rect x={x} y={y} width={width} height={height} fill={`url(#parziale-pattern)`} stroke={fill} strokeWidth={1} rx={2}/>
-      </g>
-    )
-  }
-  return <rect x={x} y={y} width={width} height={height} fill={fill} rx={2}/>
-}
+import { KpiCard, FilterBar, GranSelect, DeltaBadge, LoadingBox, ErrorBox, SectionTitle } from '../components/UI'
+import { Info, TrendingDown, TrendingUp, Clock, AlertTriangle, Printer, FileText, Download } from 'lucide-react'
 
 export default function Riepilogo() {
   const { anni, defaultAnno } = useAnni()
-  const [anno, setAnno]           = useState('')
-  const [strRic, setStrRic]       = useState('')
-  const [granularita, setGran]    = useState('mensile')
-  const [note, setNote]           = useState('')
+  const [anno, setAnno]   = useState('')
+  const [strRic, setStrRic] = useState('')
+  const [gran, setGran]   = useState('mensile')
 
   useEffect(() => { if (!anno && defaultAnno) setAnno(defaultAnno) }, [defaultAnno])
 
   const annoInt = parseInt(anno) || new Date().getFullYear()
   const ap = annoInt - 1
 
-  const { data: yoy, loading: lYoy, error: eYoy } = useKpi(
-    () => anno ? api.savingYoyGranulare({ anno: annoInt, granularita, str_ric: strRic }) : Promise.resolve(null),
-    [anno, granularita, strRic]
-  )
-  const { data: cdcData }    = useKpi(() => api.savingPerCdc({ anno, str_ric: strRic }), [anno, strRic])
-  const { data: mensileArea }= useKpi(() => api.savingMensileArea({ anno, str_ric: strRic }), [anno, strRic])
-  const { data: tempiR }     = useKpi(() => api.tempiRiepilogo(), [])
-  const { data: ncR }        = useKpi(() => api.ncRiepilogo(), [])
+  const { data: yoy,     loading: lYoy,  error: eYoy  } = useKpi(() => anno ? api.yoy({ anno: annoInt, granularita: gran, str_ric: strRic }) : Promise.resolve(null), [anno, gran, strRic])
+  const { data: cdcData, loading: lCdc               } = useKpi(() => api.perCdc({ anno, str_ric: strRic }), [anno, strRic])
+  const { data: areaData                             } = useKpi(() => api.mensileArea({ anno, str_ric: strRic }), [anno, strRic])
+  const { data: tempiR                               } = useKpi(() => api.tempiRiepilogo(), [])
+  const { data: ncR                                  } = useKpi(() => api.ncRiepilogo(), [])
 
   const hl    = yoy?.kpi_headline || {}
-  const kc    = hl.corrente  || {}
+  const kc    = hl.corrente   || {}
   const kp    = hl.precedente || {}
-  const delta = hl.delta     || {}
+  const delta = hl.delta      || {}
   const chart = yoy?.chart_data || []
 
-  // Grafici — costruiti dai dati granulari
-  const mkChart = (keyFn) =>
-    chart.map(d => ({
-      name:     d.label,
-      parziale: d.parziale,
-      curr:     keyFn(d, annoInt),
-      prev:     keyFn(d, ap),
-    }))
+  // Grafici YoY
+  const mkChart = (keyFn) => chart.map(d => ({
+    name: d.label, parziale: d.parziale,
+    curr: keyFn(d, annoInt), prev: keyFn(d, ap),
+  }))
+  const chartSav = mkChart((d,a) => Math.round((d[`saving_${a}`]||0)/1000))
+  const chartImp = mkChart((d,a) => Math.round((d[`impegnato_${a}`]||0)/1000))
+  const chartPct = mkChart((d,a) => d[`perc_saving_${a}`]||0)
+  const chartLst = mkChart((d,a) => Math.round((d[`listino_${a}`]||0)/1000))
 
-  const chartSaving  = mkChart((d,a) => Math.round((d[`saving_${a}`]||0)/1000))
-  const chartImp     = mkChart((d,a) => Math.round((d[`impegnato_${a}`]||0)/1000))
-  const chartPct     = mkChart((d,a) => d[`perc_saving_${a}`]||0)
-
-  const cdcChart = (cdcData||[]).filter(d=>d.cdc).map(d=>({
+  // CDC
+  const cdcBar = (cdcData||[]).filter(d=>d.cdc).map(d=>({
     name: d.cdc,
-    'Impegnato €K': Math.round(d.impegnato/1000),
-    'Saving €K':    Math.round(d.saving/1000),
+    'Listino €K':   Math.round((d.listino||0)/1000),
+    'Impegnato €K': Math.round((d.impegnato||0)/1000),
+    'Saving €K':    Math.round((d.saving||0)/1000),
     fill: CDC_COLORS[d.cdc]||COLORS.gray,
   }))
 
-  const autoComment = (() => {
-    if (!yoy || !kc.saving) return ''
-    const d = delta.saving
-    const base = `Saving ${hl.label_curr}: ${fmtEur(kc.saving)}`
-    if (d != null && kp.saving) {
-      const trend = d>=0 ? 'in crescita' : 'in calo'
-      return `${base} — ${trend} del ${Math.abs(d).toFixed(1)}% rispetto allo stesso periodo ${ap} (${fmtEur(kp.saving)}).`
-    }
-    return `${base}. Dati anno precedente non disponibili per il confronto.`
-  })()
-
-  // Tooltip custom con nota parziale
-  const CustomTooltip = ({ active, payload, label }) => {
-    if (!active || !payload?.length) return null
-    const d = chart.find(c => c.label === label)
-    return (
-      <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs">
-        <p className="font-semibold text-gray-700 mb-1">{label}{d?.parziale ? ' ⚠️ parziale' : ''}</p>
-        {payload.map((p,i) => (
-          <p key={i} style={{color:p.color}}>
-            {p.name}: €{p.value?.toLocaleString('it-IT')}K
-          </p>
-        ))}
-        {d?.parziale && d?.parziale_label && (
-          <p className="text-orange-500 mt-1">{d.parziale_label}</p>
-        )}
-      </div>
-    )
-  }
+  // Commento automatico
+  const nota = yoy?.nota || ''
+  const autoComment = kc.saving ? (
+    `Saving ${hl.label_curr}: ${fmtEur(kc.saving)} ` +
+    (delta.saving != null && kp.saving
+      ? `— ${delta.saving>=0?'▲ in crescita':'▼ in calo'} del ${Math.abs(delta.saving).toFixed(1)}% ` +
+        `vs stesso periodo ${ap} (${fmtEur(kp.saving)}). ` +
+        `% Saving: ${fmtPct(kc.perc_saving)} `+
+        (delta.perc_saving!=null ? `(${delta.perc_saving>=0?'+':''}${delta.perc_saving.toFixed(1)} pp vs ${ap}).` : '.')
+      : '.')
+  ) : ''
 
   return (
-    <div className="space-y-6 print:space-y-4">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Dashboard Ufficio Acquisti</h1>
           <p className="text-sm text-gray-500 mt-0.5">Report KPI — Fondazione Telethon ETS</p>
         </div>
-        <ExportBar anno={anno} strRic={strRic} note={note} />
+        <div className="flex gap-2">
+          <button onClick={() => window.print()} className="btn-outline"><Printer className="h-4 w-4"/> Stampa</button>
+          <button onClick={() => api.exportExcel({filtri:{anno,str_ric:strRic},sezioni:['riepilogo','mensile','cdc','alfa_documento','top_fornitori']})}
+            className="btn-outline"><Download className="h-4 w-4"/> Excel</button>
+        </div>
       </div>
 
       {/* Filtri */}
-      <div className="flex flex-wrap gap-3 mb-2">
-        <FilterBar anno={anno} setAnno={setAnno} strRic={strRic} setStrRic={setStrRic} anni={anni} />
-        <select
-          className="text-sm border-2 border-telethon-blue rounded-lg px-3 py-1.5 bg-white font-semibold text-telethon-blue focus:outline-none"
-          value={granularita}
-          onChange={e => setGran(e.target.value)}
-        >
-          {GRANULARITA_OPTIONS.map(o => (
-            <option key={o.value} value={o.value}>{o.value === granularita ? `📊 ${o.label}` : o.label}</option>
-          ))}
-        </select>
+      <div className="flex flex-wrap gap-3">
+        <FilterBar anno={anno} setAnno={setAnno} strRic={strRic} setStrRic={setStrRic} anni={anni}/>
+        <GranSelect value={gran} onChange={setGran}/>
       </div>
 
-      {eYoy && <ErrorBox message={eYoy} />}
+      {eYoy && <ErrorBox message={eYoy}/>}
 
       {/* Nota periodo */}
-      {yoy?.nota && (
-        <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 text-xs text-amber-800">
+      {nota && (
+        <div className="flex items-start gap-2 bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 text-xs text-amber-800">
           <Info className="h-3.5 w-3.5 mt-0.5 flex-shrink-0"/>
-          <span>{yoy.nota} KPI headline: <strong>{hl.label_curr}</strong> vs <strong>{hl.label_prev}</strong>. Le barre tratteggiate indicano periodi parziali.</span>
+          <span>{nota} <strong>KPI headline: {hl.label_curr} vs {hl.label_prev}</strong>. Barre tratteggiate = periodi parziali.</span>
         </div>
       )}
 
-      {/* KPI Cards */}
-      {lYoy ? <LoadingBox /> : kc.impegnato != null && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-          {[
-            { label:'Impegnato', value: fmtEur(kc.impegnato), delta: delta.impegnato, suffix:'%' },
-            { label:'Saving',    value: fmtEur(kc.saving),    delta: delta.saving,    suffix:'%' },
-            { label:'% Saving',  value: fmtPct(kc.perc_saving), delta: delta.perc_saving, suffix:' pp' },
-          ].map(k => (
-            <div key={k.label} className="kpi-card">
-              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{k.label}</span>
-              <div className="text-2xl font-bold text-gray-900 mt-1">{k.value}</div>
-              <DeltaBadge value={k.delta} suffix={k.suffix} label={`vs ${ap}`} />
+      {/* KPI Cards principali */}
+      {lYoy ? <LoadingBox/> : kc.listino != null && (
+        <div className="space-y-3">
+          {/* Prima riga: i 3 numeri chiave con impatto visivo */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* LISTINO */}
+            <div className="kpi-card border-l-4 border-gray-300">
+              <span className="text-xs font-bold text-gray-400 uppercase tracking-wide">Listino (prezzo di partenza)</span>
+              <div className="text-3xl font-bold text-gray-700 mt-1">{fmtEur(kc.listino)}</div>
+              <DeltaBadge value={delta.listino} label={`vs ${ap}`}/>
+              <p className="text-xs text-gray-400 mt-1">Quanto avremmo pagato senza negoziazione</p>
             </div>
-          ))}
-          <div className="kpi-card">
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Righe Totali</span>
-            <div className="text-2xl font-bold text-gray-900 mt-1">{fmtNum(kc.n_righe)}</div>
-            <span className="text-xs text-gray-400">tutti i documenti</span>
+            {/* IMPEGNATO */}
+            <div className="kpi-card border-l-4 border-telethon-blue">
+              <span className="text-xs font-bold text-telethon-blue uppercase tracking-wide">Impegnato (quanto paghiamo)</span>
+              <div className="text-3xl font-bold text-gray-900 mt-1">{fmtEur(kc.impegnato)}</div>
+              <DeltaBadge value={delta.impegnato} label={`vs ${ap}`}/>
+              <p className="text-xs text-gray-400 mt-1">Quanto paghiamo effettivamente</p>
+            </div>
+            {/* SAVING */}
+            <div className="kpi-card border-l-4 border-green-500">
+              <span className="text-xs font-bold text-green-600 uppercase tracking-wide">Saving (il nostro lavoro)</span>
+              <div className="text-3xl font-bold text-green-700 mt-1">{fmtEur(kc.saving)}</div>
+              <DeltaBadge value={delta.saving} label={`vs ${ap}`}/>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-lg font-bold text-green-600">{fmtPct(kc.perc_saving)}</span>
+                <DeltaBadge value={delta.perc_saving} suffix=" pp" label={`vs ${ap}`}/>
+              </div>
+            </div>
           </div>
-          <div className="kpi-card">
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">% Negoziati</span>
-            <div className="text-2xl font-bold text-gray-900 mt-1">{fmtPct(kc.perc_negoziati)}</div>
-            <DeltaBadge value={delta.perc_negoziati} suffix=" pp" label={`vs ${ap}`} />
-          </div>
-          <div className="kpi-card">
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">% Albo</span>
-            <div className="text-2xl font-bold text-gray-900 mt-1">{fmtPct(kc.perc_albo)}</div>
-            <span className="text-xs text-gray-400">{fmtNum(kc.n_albo)} accreditati</span>
+
+          {/* Seconda riga: metriche operative */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <KpiCard label="N° Ordini Totali" value={fmtNum(kc.n_righe)} sub="tutti i documenti"/>
+            <KpiCard label="Doc. Negoziabili" value={fmtNum(kc.n_doc_neg)} sub="OS/OSP/OPR/ORN/ORD/PS"/>
+            <KpiCard label="% Negoziati" value={fmtPct(kc.perc_negoziati)}
+              sub={<DeltaBadge value={delta.perc_negoziati} suffix=" pp" label={`vs ${ap}`}/>}/>
+            <KpiCard label="% Albo Fornitori" value={fmtPct(kc.perc_albo)} sub={`${fmtNum(kc.n_albo)} accreditati`}/>
           </div>
         </div>
       )}
 
       {/* Tempi + NC */}
-      {(tempiR || ncR) && (
+      {(tempiR?.avg_total_days || ncR?.n_nc > 0) && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {tempiR && <>
+          {tempiR?.avg_total_days && <>
             <KpiCard label="Tempo Medio Ordine" value={fmtDays(tempiR.avg_total_days)} sub="dalla creazione" color="blue" icon={<Clock className="h-3.5 w-3.5"/>}/>
             <KpiCard label="Bottleneck Acquisti" value={fmtPct(tempiR.perc_bottleneck_purchasing)} sub="ordini con ritardo UA" color="orange"/>
           </>}
@@ -197,55 +148,75 @@ export default function Riepilogo() {
         </div>
       )}
 
-      {/* Commento */}
-      {autoComment && <YoyComment autoText={autoComment} note={note} onNoteChange={setNote} />}
-
-      {/* GRAFICI SAVING */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-4">
-          <SectionTitle>Saving {anno} vs {ap} (€K) — {GRANULARITA_OPTIONS.find(o=>o.value===granularita)?.label}</SectionTitle>
-          {chart.some(d=>d.parziale) && (
-            <span className="flex items-center gap-1 text-xs text-amber-600">
-              <AlertCircle className="h-3 w-3"/> Tratteggiato = periodo parziale
-            </span>
-          )}
+      {/* Commento automatico */}
+      {autoComment && (
+        <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-sm text-blue-800">
+          💬 {autoComment}
         </div>
+      )}
+
+      {/* Grafico Saving YoY */}
+      <div className="card">
+        <SectionTitle>Saving — {anno} vs {ap} (€K) — {gran.charAt(0).toUpperCase()+gran.slice(1)}</SectionTitle>
         {lYoy ? <LoadingBox/> : (
           <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={chartSaving} margin={{top:4,right:8,left:0,bottom:0}} barGap={2}>
+            <BarChart data={chartSav} margin={{top:4,right:8,left:0,bottom:0}} barGap={2}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6"/>
               <XAxis dataKey="name" tick={{fontSize:11}}/>
               <YAxis tick={{fontSize:11}}/>
-              <Tooltip content={<CustomTooltip/>}/>
+              <Tooltip formatter={(v,n)=>[`€${v}K`,n]}/>
               <Legend wrapperStyle={{fontSize:11}}/>
-              <Bar dataKey="curr" name={String(anno)} fill={COLORS.blue} radius={[3,3,0,0]}
-                shape={(p) => <CustomBar {...p} parziale={chart[chartSaving.indexOf(chartSaving.find(d=>d.name===p.name))]?.parziale} fill={COLORS.blue}/>}/>
-              <Bar dataKey="prev" name={String(ap)} fill="#93c5fd" radius={[3,3,0,0]}/>
+              <Bar dataKey="curr" name={String(anno)} fill={COLORS.green} radius={[3,3,0,0]}/>
+              <Bar dataKey="prev" name={String(ap)} fill="#86efac" radius={[3,3,0,0]}/>
             </BarChart>
           </ResponsiveContainer>
         )}
       </div>
 
-      {/* GRAFICI IMPEGNATO + % SAVING */}
+      {/* Listino vs Impegnato */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="card">
-          <SectionTitle>Impegnato {anno} vs {ap} (€K)</SectionTitle>
+          <SectionTitle>Listino vs Impegnato — {anno} (€K)</SectionTitle>
           {lYoy ? <LoadingBox/> : (
             <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={chartImp} margin={{top:4,right:8,left:0,bottom:0}} barGap={2}>
+              <BarChart
+                data={cdcBar}
+                layout="vertical"
+                margin={{top:4,right:24,left:72,bottom:0}}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6"/>
-                <XAxis dataKey="name" tick={{fontSize:11}}/>
-                <YAxis tick={{fontSize:11}}/>
-                <Tooltip content={<CustomTooltip/>}/>
+                <XAxis type="number" tick={{fontSize:10}}/>
+                <YAxis dataKey="name" type="category" tick={{fontSize:11}} width={72}/>
+                <Tooltip formatter={(v,n)=>[`€${v}K`,n]}/>
                 <Legend wrapperStyle={{fontSize:11}}/>
-                <Bar dataKey="curr" name={String(anno)} fill={COLORS.blue} radius={[3,3,0,0]}/>
-                <Bar dataKey="prev" name={String(ap)} fill="#93c5fd" radius={[3,3,0,0]}/>
+                <Bar dataKey="Listino €K" fill="#d1d5db" radius={[0,3,3,0]}/>
+                <Bar dataKey="Impegnato €K" fill={COLORS.blue} radius={[0,3,3,0]}/>
               </BarChart>
             </ResponsiveContainer>
           )}
         </div>
+
         <div className="card">
-          <SectionTitle>% Saving {anno} vs {ap}</SectionTitle>
+          <SectionTitle>Saving per CDC — {anno} (€K)</SectionTitle>
+          {lCdc ? <LoadingBox/> : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={cdcBar} layout="vertical" margin={{top:4,right:24,left:72,bottom:0}}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6"/>
+                <XAxis type="number" tick={{fontSize:10}}/>
+                <YAxis dataKey="name" type="category" tick={{fontSize:11}} width={72}/>
+                <Tooltip formatter={(v)=>[`€${v}K`,'Saving']}/>
+                <Bar dataKey="Saving €K" radius={[0,3,3,0]}>
+                  {cdcBar.map((e,i)=><Cell key={i} fill={e.fill}/>)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
+
+      {/* % Saving mensile + Saving per area */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="card">
+          <SectionTitle>% Saving — {anno} vs {ap}</SectionTitle>
           {lYoy ? <LoadingBox/> : (
             <ResponsiveContainer width="100%" height={220}>
               <LineChart data={chartPct} margin={{top:4,right:8,left:0,bottom:0}}>
@@ -254,75 +225,36 @@ export default function Riepilogo() {
                 <YAxis tick={{fontSize:11}} unit="%"/>
                 <Tooltip formatter={(v,n)=>[fmtPct(v),n]}/>
                 <Legend wrapperStyle={{fontSize:11}}/>
-                <Line type="monotone" dataKey="curr" name={String(anno)}
-                  stroke={COLORS.blue} strokeWidth={2.5} dot={{r:4}} connectNulls={false}/>
-                <Line type="monotone" dataKey="prev" name={String(ap)}
-                  stroke="#93c5fd" strokeWidth={1.5} strokeDasharray="5 3" dot={{r:2}}/>
+                <Line type="monotone" dataKey="curr" name={String(anno)} stroke={COLORS.green} strokeWidth={2.5} dot={{r:3}}/>
+                <Line type="monotone" dataKey="prev" name={String(ap)} stroke="#86efac" strokeWidth={1.5} strokeDasharray="5 3" dot={{r:2}}/>
               </LineChart>
             </ResponsiveContainer>
           )}
         </div>
-      </div>
 
-      {/* CDC — barre orizzontali */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="card">
-          <SectionTitle>Impegnato per CDC — {anno} (€K)</SectionTitle>
-          {!cdcData ? <LoadingBox/> : (
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={cdcChart} layout="vertical" margin={{top:4,right:24,left:64,bottom:0}}>
+          <SectionTitle>Saving per Area — {anno} (€K)</SectionTitle>
+          {!areaData ? <LoadingBox/> : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart
+                data={(areaData||[]).map(d=>({
+                  name: d.label||d.mese,
+                  'Ricerca':   Math.round((d.ric_saving||0)/1000),
+                  'Struttura': Math.round((d.str_saving||0)/1000),
+                }))}
+                margin={{top:4,right:8,left:0,bottom:0}}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6"/>
-                <XAxis type="number" tick={{fontSize:10}}/>
-                <YAxis dataKey="name" type="category" tick={{fontSize:11}} width={64}/>
-                <Tooltip formatter={(v)=>[`€${v}K`,'Impegnato']}/>
-                <Bar dataKey="Impegnato €K" radius={[0,3,3,0]}>
-                  {cdcChart.map((e,i)=><Cell key={i} fill={e.fill}/>)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-        <div className="card">
-          <SectionTitle>Saving per CDC — {anno} (€K)</SectionTitle>
-          {!cdcData ? <LoadingBox/> : (
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={cdcChart} layout="vertical" margin={{top:4,right:24,left:64,bottom:0}}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6"/>
-                <XAxis type="number" tick={{fontSize:10}}/>
-                <YAxis dataKey="name" type="category" tick={{fontSize:11}} width={64}/>
-                <Tooltip formatter={(v)=>[`€${v}K`,'Saving']}/>
-                <Bar dataKey="Saving €K" radius={[0,3,3,0]}>
-                  {cdcChart.map((e,i)=><Cell key={i} fill={e.fill}/>)}
-                </Bar>
+                <XAxis dataKey="name" tick={{fontSize:11}}/>
+                <YAxis tick={{fontSize:11}}/>
+                <Tooltip formatter={(v,n)=>[`€${v}K`,n]}/>
+                <Legend wrapperStyle={{fontSize:11}}/>
+                <Bar dataKey="Ricerca"   fill={COLORS.blue} stackId="a"/>
+                <Bar dataKey="Struttura" fill={COLORS.teal} stackId="a" radius={[3,3,0,0]}/>
               </BarChart>
             </ResponsiveContainer>
           )}
         </div>
       </div>
-
-      {/* Saving per area (stacked) */}
-      {mensileArea && mensileArea.length > 0 && (
-        <div className="card">
-          <SectionTitle>Saving Mensile per Area — {anno} (€K)</SectionTitle>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart
-              data={mensileArea.map(d=>({
-                name: d.label || d.mese,
-                'Ricerca':   Math.round((d.ric_saving||0)/1000),
-                'Struttura': Math.round((d.str_saving||0)/1000),
-              }))}
-              margin={{top:4,right:8,left:0,bottom:0}}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6"/>
-              <XAxis dataKey="name" tick={{fontSize:11}}/>
-              <YAxis tick={{fontSize:11}}/>
-              <Tooltip formatter={(v,n)=>[`€${v}K`,n]}/>
-              <Legend wrapperStyle={{fontSize:11}}/>
-              <Bar dataKey="Ricerca"   fill={COLORS.blue}  radius={[0,0,0,0]} stackId="a"/>
-              <Bar dataKey="Struttura" fill={COLORS.teal}  radius={[3,3,0,0]} stackId="a"/>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
     </div>
   )
 }
