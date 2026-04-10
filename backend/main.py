@@ -411,6 +411,17 @@ async def upload_saving(
         df = df[df[date_col].dt.year == anno_filter]
         if df.empty:
             raise HTTPException(400, f"Nessuna riga per l'anno {anno_filter} nel file.")
+    else:
+        # Auto-filtro: se un anno ha >95% delle righe, usa solo quello
+        # Evita di importare righe "contaminate" di altri anni
+        anno_counts = df[date_col].dt.year.value_counts()
+        if len(anno_counts) > 1:
+            anno_dominante = anno_counts.index[0]
+            perc_dominante = anno_counts.iloc[0] / len(df)
+            if perc_dominante >= 0.95:
+                righe_prima = len(df)
+                df = df[df[date_col].dt.year == anno_dominante]
+                log.info(f"Auto-filtro anno: {anno_dominante} ({len(df)}/{righe_prima} righe, {perc_dominante:.1%})")
 
     has_eur  = "imp_iniziale_eur" in col
     has_cdc  = "cdc" in col
@@ -1826,3 +1837,8 @@ def kpi_yoy_granulare(
         "mese_max_curr": mese_max_curr,
         "ultimo_giorno": ultimo_giorno,
     }
+
+@app.get("/wake")
+def wake():
+    """Endpoint leggero per svegliare il backend Render prima di caricare la dashboard."""
+    return {"ok": True}
