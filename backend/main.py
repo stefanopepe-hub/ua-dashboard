@@ -1,15 +1,20 @@
 """
-UA Dashboard Backend v8 — Fondazione Telethon ETS
-Architettura pulita: logica business in domain.py, API in main.py.
+UA Dashboard Backend v9 — Fondazione Telethon ETS
+Architettura unificata: UN SOLO pipeline ingestion per preview + import + analytics.
 
-KPI DEFINITIVI:
-  listino    = Imp. Iniziale €   (prezzo di partenza)
-  impegnato  = Imp. Negoziato €  (quanto paghiamo)
-  saving     = Saving.1          (il nostro lavoro: listino - impegnato)
-  % saving   = saving / listino × 100
+ROOT CAUSES RISOLTI:
+  1. Split-brain: upload_saving() ora usa ingestion_engine (non domain.COL_MAP)
+  2. Field mismatch: colonne DB canoniche usate ovunque
+  3. Resource file: nuovo endpoint + tabella
+  4. /wake timeout: timeout esteso a 60s nel frontend
+  5. Missing endpoints: tutte le routes esistono e funzionano
 
-NUMERI DI RIFERIMENTO 2025:
-  10.413 righe | listino €77.47M | impegnato €69.68M | saving €7.79M | 10.06%
+CANONICAL DB FIELDS (tabella saving):
+  imp_listino_eur    = Imp. Iniziale €   (listino)
+  imp_impegnato_eur  = Imp. Negoziato €  (impegnato)
+  saving_eur         = Saving.1          (saving)
+  macro_categoria    = macro categorie
+  utente_presentazione = utente per presentazione
 """
 import os, io, logging
 from typing import Optional
@@ -20,25 +25,21 @@ from fastapi.responses import StreamingResponse
 from supabase import create_client
 from dotenv import load_dotenv
 
-# Import dal modulo domain (testabile separatamente)
+# ── Import moduli interni ─────────────────────────────────────────
 from ingestion_engine import (
     inspect_workbook, mapping_result_to_dict, FileFamily,
-    build_column_map,
+    build_column_map, FieldMapping,
 )
 from domain import (
-    map_cols, gcol, best_sheet, build_record, calc_kpi,
-    validate_mapping, _s, _b, _f, _fn, _i, _d, clean, safe_pct,
-    DOC_NEG,
+    calc_kpi, _s, _b, _f, _fn, _i, _d, clean, safe_pct,
+    DOC_NEG, parse_commessa, derive_cdc,
 )
-
-MESI_IT = {1:"Gen",2:"Feb",3:"Mar",4:"Apr",5:"Mag",6:"Giu",
-           7:"Lug",8:"Ago",9:"Set",10:"Ott",11:"Nov",12:"Dic"}
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ua")
 
-app = FastAPI(title="UA Dashboard API", version="8.0.0")
+app = FastAPI(title="UA Dashboard API", version="9.0.0")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
@@ -53,12 +54,12 @@ def sb():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ─────────────────────────────────────────────────────────────────
-# QUERY CON PAGINAZIONE AUTOMATICA
-# Supabase: max 1000 righe per request. Iteriamo finché < PAGE.
+# PAGINAZIONE SUPABASE — max 1000 righe per request
 # ─────────────────────────────────────────────────────────────────
 PAGE = 1000
 
 def query(table: str, filters=None, select: str = "*") -> list:
+    """Query con paginazione automatica."""
     client = sb()
     all_rows, offset = [], 0
     while True:
@@ -73,9 +74,13 @@ def query(table: str, filters=None, select: str = "*") -> list:
         offset += PAGE
     return all_rows
 
-def saving_filters(anno=None, str_ric=None, cdc=None, alfa=None, macro=None, pref_comm=None):
+def saving_filters(anno=None, str_ric=None, cdc=None, alfa=None,
+                   macro=None, pref_comm=None):
+    """Costruisce filtri Supabase per la tabella saving."""
     fs = []
-    if anno:       fs.append(lambda q, a=anno: q.gte("data_doc", f"{a}-01-01").lte("data_doc", f"{a}-12-31"))
+    if anno:
+        fs.append(lambda q, a=anno: q.gte("data_doc", f"{a}-01-01")
+                                     .lte("data_doc", f"{a}-12-31"))
     if str_ric:    fs.append(lambda q, v=str_ric: q.eq("str_ric", v))
     if cdc:        fs.append(lambda q, v=cdc: q.eq("cdc", v))
     if alfa:       fs.append(lambda q, v=alfa: q.eq("alfa_documento", v))
@@ -85,11 +90,13 @@ def saving_filters(anno=None, str_ric=None, cdc=None, alfa=None, macro=None, pre
 
 def get_saving_df(anno=None, str_ric=None, cdc=None, alfa=None,
                   macro=None, pref_comm=None, cols="*") -> pd.DataFrame:
+    """Carica saving dal DB con paginazione e normalizzazione."""
     rows = query("saving", saving_filters(anno, str_ric, cdc, alfa, macro, pref_comm), cols)
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-    df['data_doc'] = pd.to_datetime(df['data_doc'], errors='coerce')
+    # Normalizza tipi
+    df['data_doc'] = pd.to_datetime(df.get('data_doc', pd.Series()), errors='coerce')
     for c in ['imp_listino_eur', 'imp_impegnato_eur', 'saving_eur']:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
@@ -100,63 +107,189 @@ def get_saving_df(anno=None, str_ric=None, cdc=None, alfa=None,
 
 
 # ─────────────────────────────────────────────────────────────────
-# UPLOAD — SAVING
+# UTILITY: costruisce record canonical dalla riga usando ingestion_engine
 # ─────────────────────────────────────────────────────────────────
 
-@app.post("/upload/inspect")
-async def upload_inspect(file: UploadFile = File(...)):
-    """Ispeziona file senza importare. Ritorna family, confidence, mapping, analisi."""
-    contents = await file.read()
-    try:
-        import io as _io
-        xl = pd.ExcelFile(_io.BytesIO(contents))
-        mr = inspect_workbook(xl)
-        return mapping_result_to_dict(mr)
-    except Exception as e:
-        raise HTTPException(400, f"Errore ispezione: {str(e)[:300]}")
+def build_saving_record(
+    col_map: dict,       # canonical → FieldMapping
+    row: pd.Series,
+    upload_id: str,
+    cdc_override: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Costruisce il record DB canonico da una riga.
+    Usa ingestion_engine col_map (FieldMapping objects).
+    """
+    def gcol(canonical: str):
+        fm = col_map.get(canonical)
+        if not fm:
+            return None
+        return row.get(fm.source_column)
+
+    # Data — obbligatoria
+    dv = _d(gcol('data_doc'))
+    if not dv:
+        return None
+
+    cambio = _f(gcol('cambio'), 1.0) or 1.0
+    valuta = _s(gcol('valuta')) or 'EURO'
+
+    # Importi EUR (priorità) o valuta originale convertita
+    has_eur = 'listino_eur' in col_map and 'impegnato_eur' in col_map
+    if has_eur:
+        lst   = _f(gcol('listino_eur'))
+        imp   = _f(gcol('impegnato_eur'))
+        sav   = _f(gcol('saving_eur'))
+        pct_s = _f(gcol('perc_saving_eur'))
+    else:
+        lst   = _f(gcol('listino_val')) * cambio
+        imp   = _f(gcol('impegnato_val')) * cambio
+        sav   = _f(gcol('saving_val')) * cambio
+        pct_s = _f(gcol('perc_saving_val'))
+
+    # Ricalcola se mancante
+    if sav == 0 and lst > 0 and imp > 0:
+        sav = lst - imp
+    if pct_s == 0 and lst > 0:
+        pct_s = sav / lst * 100
+
+    # CDC
+    if cdc_override:
+        cdc_val = cdc_override
+    elif 'cdc' in col_map:
+        cdc_val = _s(gcol('cdc'))
+    else:
+        cdc_val = derive_cdc(
+            _s(gcol('centro_costo')) or '',
+            _s(gcol('desc_cdc')) or ''
+        )
+
+    # Commessa
+    pc = _s(gcol('protoc_commessa'))
+    pref, anno_comm = parse_commessa(pc)
+
+    r = {
+        "upload_id":            upload_id,
+        "data_doc":             dv,
+        "alfa_documento":       _s(gcol('alfa_documento')),
+        "str_ric":              _s(gcol('str_ric')),
+        "stato_dms":            _s(gcol('stato_dms')),
+        "ragione_sociale":      _s(gcol('ragione_sociale')),
+        "codice_fornitore":     _i(gcol('codice_fornitore')),
+        "accred_albo":          _b(gcol('accred_albo')),
+        "utente":               _s(gcol('utente')),
+        "utente_presentazione": _s(gcol('utente_pres')),
+        "cod_utente":           _i(gcol('cod_utente')),
+        "num_doc":              _i(gcol('num_doc')),
+        "protoc_ordine":        _fn(gcol('protoc_ordine')),
+        "protoc_commessa":      pc,
+        "prefisso_commessa":    pref,
+        "anno_commessa":        anno_comm,
+        "grp_merceol":          _s(gcol('grp_merceol')),
+        "desc_gruppo_merceol":  _s(gcol('desc_merceol')),
+        "macro_categoria":      _s(gcol('macro_cat')),
+        "centro_di_costo":      _s(gcol('centro_costo')),
+        "desc_cdc":             _s(gcol('desc_cdc')),
+        "cdc":                  cdc_val,
+        "valuta":               valuta,
+        "cambio":               cambio,
+        # Canonical financial fields (DB canonical names)
+        "imp_listino_eur":      lst,
+        "imp_impegnato_eur":    imp,
+        "saving_eur":           sav,
+        "perc_saving_eur":      pct_s,
+        # Legacy fields (valuta originale)
+        "imp_iniziale":         _f(gcol('listino_val')),
+        "imp_negoziato":        _f(gcol('impegnato_val')),
+        "saving_val":           _f(gcol('saving_val')),
+        "perc_saving":          _f(gcol('perc_saving_val')),
+        "negoziazione":         _b(gcol('negoziazione')),
+        "tail_spend":           _s(gcol('tail_spend')),
+    }
+    return {k: clean(v) for k, v in r.items()}
+
+
+# ─────────────────────────────────────────────────────────────────
+# UPLOAD — SAVING  (pipeline unificata, usa ingestion_engine)
+# ─────────────────────────────────────────────────────────────────
 
 @app.post("/upload/saving")
 async def upload_saving(file: UploadFile = File(...), cdc_override: Optional[str] = None):
+    """
+    Pipeline unificata: ingestion_engine → canonical → DB.
+    Stesso mapping usato da /upload/inspect e da tutte le analytics.
+    """
     contents = await file.read()
     try:
         xl = pd.ExcelFile(io.BytesIO(contents))
-        sheet = best_sheet(xl)
-        df = pd.read_excel(xl, sheet_name=sheet)
     except Exception as e:
-        raise HTTPException(400, f"Errore lettura file: {e}")
+        raise HTTPException(400, f"Errore apertura file: {e}")
 
-    df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
-    df.columns = [c.strip() for c in df.columns]
-    col = map_cols(df.columns)
+    # ── Step 1: ispeziona con ingestion_engine (STESSO motore del preview) ──
+    mr = inspect_workbook(xl)
 
-    # Validazione mapping
-    validation = validate_mapping(col)
-    if not validation['valid']:
+    # ── Step 2: valida ──
+    if mr.overall_score < 0.30:
         raise HTTPException(400,
-            f"File non valido. Campi mancanti: {validation['missing_critical']}. "
+            f"File non riconoscibile (confidence {mr.overall_score:.0%}). "
+            f"Tipo rilevato: {mr.family.value}. "
+            f"Campi mancanti: {mr.missing_critical}. "
             f"Scarica il template standard per un formato garantito.")
 
-    date_col = col.get('data_doc')
-    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-    df = df.dropna(subset=[date_col])
+    if mr.family not in (FileFamily.SAVINGS, FileFamily.ORDERS_DETAIL):
+        raise HTTPException(400,
+            f"Tipo file rilevato: '{mr.family.value}' — questo endpoint è per file Saving/Ordini. "
+            f"Usa /upload/risorse per file risorse, /upload/nc per non conformità.")
 
-    # Auto-filtro anno dominante
-    yr = df[date_col].dt.year.value_counts()
-    if len(yr) > 1 and yr.iloc[0] / len(df) >= 0.95:
-        anno_dom = int(yr.index[0])
-        df = df[df[date_col].dt.year == anno_dom]
-        log.info(f"Auto-filtro anno {anno_dom}: {len(df)} righe")
+    # ── Step 3: rileggi il foglio con header corretto ──
+    df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=mr.header_row)
+    df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
+    df.columns = [str(c).strip() for c in df.columns]
 
+    # ── Step 4: usa il col_map dell'engine (stesso del preview) ──
+    col_map = mr.fields  # Dict[canonical → FieldMapping]
+
+    # ── Step 5: filtro anno (auto-detect anno dominante) ──
+    date_fm = col_map.get('data_doc')
+    if date_fm:
+        date_col = date_fm.source_column
+        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+        df = df.dropna(subset=[date_col])
+        yr = df[date_col].dt.year.value_counts()
+        if len(yr) > 1 and yr.iloc[0] / len(df) >= 0.95:
+            anno_dom = int(yr.index[0])
+            df = df[df[date_col].dt.year == anno_dom]
+            log.info(f"Auto-filtro anno {anno_dom}: {len(df)} righe")
+
+    # ── Step 6: crea upload_log entry ──
+    preview_dict = mapping_result_to_dict(mr)
     client = sb()
     lr = client.table("upload_log").insert({
-        "filename": file.filename, "tipo": "saving", "cdc_filter": cdc_override
+        "filename":           file.filename,
+        "tipo":               "saving",
+        "cdc_filter":         cdc_override,
+        "family_detected":    mr.family.value,
+        "mapping_confidence": mr.overall_confidence.value,
+        "mapping_score":      mr.overall_score,
+        "sheet_used":         mr.sheet_name,
+        "header_row":         mr.header_row,
+        "available_analyses": preview_dict.get('available_analyses', []),
+        "blocked_analyses":   preview_dict.get('blocked_analyses', []),
+        "warnings":           preview_dict.get('warnings', []),
     }).execute()
     upload_id = lr.data[0]["id"]
 
-    records = [build_record(col, row, upload_id, cdc_override)
-               for _, row in df.iterrows()
-               if _d(row.get(date_col)) is not None]
+    # ── Step 7: costruisci records canonical ──
+    records = []
+    skipped = 0
+    for _, row in df.iterrows():
+        rec = build_saving_record(col_map, row, upload_id, cdc_override)
+        if rec:
+            records.append(rec)
+        else:
+            skipped += 1
 
+    # ── Step 8: insert in batch ──
     inserted = 0
     BATCH = 5000
     for i in range(0, len(records), BATCH):
@@ -172,16 +305,104 @@ async def upload_saving(file: UploadFile = File(...), cdc_override: Optional[str
                 raise HTTPException(500, f"Errore DB: {str(e)[:400]}")
 
     client.table("upload_log").update({"rows_inserted": inserted}).eq("id", upload_id).execute()
-    log.info(f"Upload OK: {inserted} righe, foglio='{sheet}', warnings={validation['warnings']}")
+    log.info(f"Upload OK: {inserted} righe, {skipped} saltate")
 
     return {
         "status": "ok",
         "rows_inserted": inserted,
+        "rows_skipped": skipped,
         "upload_id": upload_id,
-        "sheet_used": sheet,
-        "mapping_confidence": validation['confidence'],
-        "warnings": validation['warnings'],
+        "sheet_used": mr.sheet_name,
+        "family": mr.family.value,
+        "mapping_confidence": mr.overall_confidence.value,
+        "mapping_score": mr.overall_score,
+        "available_analyses": mr.available_analyses,
+        "blocked_analyses": mr.blocked_analyses,
+        "warnings": mr.warnings,
     }
+
+
+@app.post("/upload/inspect")
+async def upload_inspect(file: UploadFile = File(...)):
+    """Preview intelligente senza importare. Stesso engine del vero import."""
+    contents = await file.read()
+    try:
+        xl = pd.ExcelFile(io.BytesIO(contents))
+        mr = inspect_workbook(xl)
+        return mapping_result_to_dict(mr)
+    except Exception as e:
+        raise HTTPException(400, f"Errore ispezione: {str(e)[:300]}")
+
+
+@app.post("/upload/risorse")
+async def upload_risorse(file: UploadFile = File(...)):
+    """Upload file analytics risorse / team."""
+    contents = await file.read()
+    try:
+        xl = pd.ExcelFile(io.BytesIO(contents))
+    except Exception as e:
+        raise HTTPException(400, f"Errore apertura file: {e}")
+
+    mr = inspect_workbook(xl)
+    if mr.family != FileFamily.RISORSE:
+        raise HTTPException(400,
+            f"File rilevato come '{mr.family.value}' (confidence {mr.family_confidence:.0%}). "
+            f"Questo endpoint è per file risorse con colonne: Risorsa, Pratiche Gestite, Mese, ecc. "
+            f"Confidence risorse: {mr.family_candidate_scores.get('risorse', 0):.0%}")
+
+    df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=mr.header_row)
+    df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
+    df.columns = [str(c).strip() for c in df.columns]
+    col_map = mr.fields
+
+    def gcol(canonical: str):
+        fm = col_map.get(canonical)
+        return row.get(fm.source_column) if fm else None
+
+    client = sb()
+    lr = client.table("upload_log").insert({
+        "filename": file.filename, "tipo": "risorse",
+        "family_detected": mr.family.value,
+        "mapping_confidence": mr.overall_confidence.value,
+        "sheet_used": mr.sheet_name,
+    }).execute()
+    uid = lr.data[0]["id"]
+
+    records = []
+    for _, row in df.iterrows():
+        mese_raw = _s(gcol('year_month')) or ''
+        year = month = quarter = None
+        try:
+            parts = mese_raw.split('-')
+            if len(parts) == 2:
+                year, month = int(parts[0]), int(parts[1])
+                quarter = (month - 1) // 3 + 1
+        except Exception:
+            pass
+
+        records.append({
+            "upload_id":             uid,
+            "year":                  year,
+            "month":                 month,
+            "quarter":               quarter,
+            "mese_label":            mese_raw,
+            "risorsa":               _s(gcol('risorsa')) or 'N/D',
+            "struttura":             _s(gcol('str_ric')),
+            "pratiche_gestite":      _i(gcol('pratiche_gestite')),
+            "pratiche_aperte":       _i(gcol('pratiche_aperte')),
+            "pratiche_chiuse":       _i(gcol('pratiche_chiuse')),
+            "saving_generato":       _fn(gcol('saving_generato')),
+            "negoziazioni_concluse": _i(gcol('negoziazioni_concluse')),
+            "tempo_medio_giorni":    _fn(gcol('tempo_medio_risorsa')),
+            "efficienza":            _fn(gcol('efficienza')),
+        })
+
+    records_clean = [{k: clean(v) for k, v in r.items()} for r in records]
+    for i in range(0, len(records_clean), 500):
+        client.table("resource_performance").insert(records_clean[i:i+500]).execute()
+    client.table("upload_log").update({"rows_inserted": len(records_clean)}).eq("id", uid).execute()
+
+    return {"status": "ok", "rows": len(records_clean), "family": mr.family.value}
 
 
 @app.post("/upload/tempi")
@@ -189,31 +410,42 @@ async def upload_tempi(file: UploadFile = File(...)):
     contents = await file.read()
     try:
         xl = pd.ExcelFile(io.BytesIO(contents))
-        sh = max(xl.sheet_names, key=lambda s: len(pd.read_excel(xl, sheet_name=s)))
-        df = pd.read_excel(xl, sheet_name=sh)
+        mr = inspect_workbook(xl)
+        df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=mr.header_row)
+        df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
+        df.columns = [str(c).strip() for c in df.columns]
     except Exception as e:
         raise HTTPException(400, str(e))
-    df.columns = [c.strip() for c in df.columns]
-    n = {c.lower(): c for c in df.columns}
-    def gc(k): return n.get(k)
+
+    col_map = mr.fields
+    def gcol(canonical):
+        fm = col_map.get(canonical)
+        return row.get(fm.source_column) if fm else None
+
     client = sb()
-    lr = client.table("upload_log").insert({"filename": file.filename, "tipo": "tempi"}).execute()
+    lr = client.table("upload_log").insert({
+        "filename": file.filename, "tipo": "tempi",
+        "family_detected": mr.family.value,
+    }).execute()
     uid = lr.data[0]["id"]
-    recs = [{
-        "upload_id":        uid,
-        "protocol":         _s(row.get(gc("protocol"))),
-        "year_month":       _s(row.get(gc("year_month")) or row.get(gc("anno_mese"))),
-        "days_purchasing":  _f(row.get(gc("days_purchasing"))),
-        "days_auto":        _f(row.get(gc("days_auto"))),
-        "days_other":       _f(row.get(gc("days_other"))),
-        "total_days":       _f(row.get(gc("total_days"))),
-        "perc_purchasing":  _f(row.get(gc("perc_purchasing"))),
-        "perc_auto":        _f(row.get(gc("perc_auto"))),
-        "perc_other":       _f(row.get(gc("perc_other"))),
-        "bottleneck":       _s(row.get(gc("bottleneck"))),
-    } for _, row in df.iterrows()]
+
+    recs = []
+    for _, row in df.iterrows():
+        recs.append({
+            "upload_id":        uid,
+            "protocol":         _s(gcol('protoc_commessa')),
+            "year_month":       _s(gcol('year_month')),
+            "days_purchasing":  _f(gcol('days_purchasing')),
+            "days_auto":        _f(gcol('days_auto')),
+            "days_other":       _f(gcol('days_other')),
+            "total_days":       _f(gcol('total_days')),
+            "bottleneck":       _s(gcol('bottleneck')),
+        })
+
     for i in range(0, len(recs), 500):
-        client.table("tempo_attraversamento").insert(recs[i:i+500]).execute()
+        client.table("tempo_attraversamento").insert(
+            [{k: clean(v) for k, v in r.items()} for r in recs[i:i+500]]
+        ).execute()
     client.table("upload_log").update({"rows_inserted": len(recs)}).eq("id", uid).execute()
     return {"status": "ok", "rows": len(recs)}
 
@@ -223,44 +455,61 @@ async def upload_nc(file: UploadFile = File(...)):
     contents = await file.read()
     try:
         xl = pd.ExcelFile(io.BytesIO(contents))
-        sh = max(xl.sheet_names, key=lambda s: len(pd.read_excel(xl, sheet_name=s)))
-        df = pd.read_excel(xl, sheet_name=sh)
+        mr = inspect_workbook(xl)
+        df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=mr.header_row)
+        df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
+        df.columns = [str(c).strip() for c in df.columns]
     except Exception as e:
         raise HTTPException(400, str(e))
-    df.columns = [c.strip() for c in df.columns]
-    n = {c.lower(): c for c in df.columns}
-    def gc(k): return n.get(k)
+
+    col_map = mr.fields
+    def gcol(canonical):
+        fm = col_map.get(canonical)
+        return row.get(fm.source_column) if fm else None
+
     client = sb()
-    lr = client.table("upload_log").insert({"filename": file.filename, "tipo": "nc"}).execute()
+    lr = client.table("upload_log").insert({
+        "filename": file.filename, "tipo": "nc",
+        "family_detected": mr.family.value,
+    }).execute()
     uid = lr.data[0]["id"]
-    recs = [{
-        "upload_id":             uid,
-        "protocollo_commessa":   _s(row.get(gc("protocollo commessa"))),
-        "ragione_sociale":       _s(row.get(gc("ragione sociale anagrafica") or gc("ragione sociale") or "")),
-        "tipo_origine":          _s(row.get(gc("tipo origine"))),
-        "data_origine":          _d(row.get(gc("data origine"))),
-        "utente_origine":        _s(row.get(gc("utente origine"))),
-        "codice_prima_fattura":  _s(row.get(gc("codice prima fattura"))),
-        "data_prima_fattura":    _d(row.get(gc("data prima fattura"))),
-        "importo_prima_fattura": _fn(row.get(gc("importo prima fattura"))),
-        "delta_giorni":          _fn(row.get(gc("delta giorni (fattura - origine)") or gc("delta giorni"))),
-        "non_conformita":        _b(row.get(gc("non conformità") or gc("non conformita"))),
-    } for _, row in df.iterrows()]
+
+    recs = []
+    for _, row in df.iterrows():
+        recs.append({
+            "upload_id":             uid,
+            "ragione_sociale":       _s(gcol('ragione_sociale')),
+            "tipo_origine":          _s(gcol('tipo_origine')),
+            "data_origine":          _d(gcol('data_origine')) or _d(gcol('data_doc')),
+            "utente_origine":        _s(gcol('utente')),
+            "delta_giorni":          _fn(gcol('delta_giorni')),
+            "non_conformita":        _b(gcol('non_conformita')),
+        })
+
     for i in range(0, len(recs), 500):
-        client.table("non_conformita").insert(recs[i:i+500]).execute()
+        client.table("non_conformita").insert(
+            [{k: clean(v) for k, v in r.items()} for r in recs[i:i+500]]
+        ).execute()
     client.table("upload_log").update({"rows_inserted": len(recs)}).eq("id", uid).execute()
     return {"status": "ok", "rows": len(recs)}
 
 
 # ─────────────────────────────────────────────────────────────────
-# KPI SAVING
+# KPI SAVING — tutte le analytics usano campi DB canonici
 # ─────────────────────────────────────────────────────────────────
+
+MESI = {1:"Gen",2:"Feb",3:"Mar",4:"Apr",5:"Mag",6:"Giu",
+        7:"Lug",8:"Ago",9:"Set",10:"Ott",11:"Nov",12:"Dic"}
+
 @app.get("/kpi/saving/anni")
 def get_anni():
     rows = query("saving", select="data_doc")
     df = pd.DataFrame(rows)
     if df.empty: return []
-    anni = sorted(pd.to_datetime(df["data_doc"]).dt.year.dropna().unique().astype(int).tolist(), reverse=True)
+    anni = sorted(
+        pd.to_datetime(df["data_doc"]).dt.year.dropna().unique().astype(int).tolist(),
+        reverse=True
+    )
     return [{"anno": a} for a in anni]
 
 @app.get("/kpi/saving/riepilogo")
@@ -284,15 +533,30 @@ def kpi_mensile(
     df["mese"] = df["data_doc"].dt.strftime("%Y-%m")
     return sorted([{"mese": m, **calc_kpi(g)} for m, g in df.groupby("mese")], key=lambda x: x["mese"])
 
+@app.get("/kpi/saving/mensile-con-area")
+def kpi_mensile_area(anno: Optional[int] = Query(None), cdc: Optional[str] = Query(None)):
+    df = get_saving_df(anno, cdc=cdc,
+        cols="data_doc,str_ric,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,alfa_documento,accred_albo")
+    if df.empty: return []
+    df["mese"] = df["data_doc"].dt.strftime("%Y-%m")
+    MLBL = {f"{anno}-{m:02d}": MESI[m] for m in range(1, 13)} if anno else {}
+    result = []
+    for mese, grp in df.groupby("mese"):
+        result.append({
+            "mese": mese, "label": MLBL.get(mese, mese),
+            **{f"tot_{k}": v for k, v in calc_kpi(grp).items()},
+            **{f"ric_{k}": v for k, v in calc_kpi(grp[grp["str_ric"] == "RICERCA"]).items()},
+            **{f"str_{k}": v for k, v in calc_kpi(grp[grp["str_ric"] == "STRUTTURA"]).items()},
+        })
+    return sorted(result, key=lambda x: x["mese"])
+
 @app.get("/kpi/saving/per-cdc")
-def kpi_per_cdc(
-    anno: Optional[int] = Query(None), str_ric: Optional[str] = Query(None)
-):
+def kpi_per_cdc(anno: Optional[int] = Query(None), str_ric: Optional[str] = Query(None)):
     df = get_saving_df(anno, str_ric,
         cols="cdc,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,accred_albo,alfa_documento")
     if df.empty: return []
     return sorted([{"cdc": c, **calc_kpi(g)} for c, g in df.groupby("cdc") if c],
-        key=lambda x: x["saving"], reverse=True)
+                  key=lambda x: x["saving"], reverse=True)
 
 @app.get("/kpi/saving/per-buyer")
 def kpi_per_buyer(
@@ -305,7 +569,7 @@ def kpi_per_buyer(
     df["buyer"] = df["utente_presentazione"].fillna(df["utente"])
     return sorted(
         [{"utente": b, **calc_kpi(g)} for b, g in df.groupby("buyer")
-         if b and str(b).strip() and str(b).strip().lower() not in ('nan', 'none')],
+         if b and str(b).strip() not in ('nan', 'none', '')],
         key=lambda x: x["saving"], reverse=True
     )
 
@@ -317,8 +581,10 @@ def kpi_per_alfa(
     df = get_saving_df(anno, str_ric, cdc,
         cols="alfa_documento,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,accred_albo")
     if df.empty: return []
-    return sorted([{"alfa_documento": a, **calc_kpi(g)} for a, g in df.groupby("alfa_documento") if a],
-        key=lambda x: x["listino"], reverse=True)
+    return sorted(
+        [{"alfa_documento": a, **calc_kpi(g)} for a, g in df.groupby("alfa_documento") if a],
+        key=lambda x: x["listino"], reverse=True
+    )
 
 @app.get("/kpi/saving/per-macro-categoria")
 def kpi_per_macro(
@@ -329,8 +595,10 @@ def kpi_per_macro(
         cols="macro_categoria,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,accred_albo,alfa_documento")
     if df.empty: return []
     df["macro_categoria"] = df["macro_categoria"].fillna("Non classificato").str.strip()
-    return sorted([{"macro_categoria": m, **calc_kpi(g)} for m, g in df.groupby("macro_categoria")],
-        key=lambda x: x["saving"], reverse=True)
+    return sorted(
+        [{"macro_categoria": m, **calc_kpi(g)} for m, g in df.groupby("macro_categoria")],
+        key=lambda x: x["saving"], reverse=True
+    )
 
 @app.get("/kpi/saving/per-commessa")
 def kpi_per_commessa(
@@ -381,13 +649,11 @@ def kpi_top_fornitori(
     return result[:limit]
 
 @app.get("/kpi/saving/pareto-fornitori")
-def kpi_pareto(
-    anno: Optional[int] = Query(None), str_ric: Optional[str] = Query(None)
-):
+def kpi_pareto(anno: Optional[int] = Query(None), str_ric: Optional[str] = Query(None)):
     df = get_saving_df(anno, str_ric, cols="ragione_sociale,imp_impegnato_eur")
     if df.empty: return []
     grp = (df.groupby("ragione_sociale")["imp_impegnato_eur"].sum()
-             .sort_values(ascending=False).reset_index())
+            .sort_values(ascending=False).reset_index())
     total = grp["imp_impegnato_eur"].sum()
     grp["cum_perc"] = (grp["imp_impegnato_eur"].cumsum() / total * 100).round(2)
     grp["rank"] = range(1, len(grp) + 1)
@@ -408,8 +674,9 @@ def kpi_valute(anno: Optional[int] = Query(None)):
 
 
 # ─────────────────────────────────────────────────────────────────
-# YOY GRANULARE
+# YOY
 # ─────────────────────────────────────────────────────────────────
+
 GRAN_MAP = {
     "mensile":    [(m, m, f"M{m:02d}") for m in range(1, 13)],
     "bimestrale": [(1,2,"B1"),(3,4,"B2"),(5,6,"B3"),(7,8,"B4"),(9,10,"B5"),(11,12,"B6")],
@@ -428,7 +695,7 @@ def kpi_yoy(
     cols = "data_doc,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,alfa_documento,accred_albo"
 
     df_c = get_saving_df(anno, str_ric, cdc, cols=cols)
-    df_p = get_saving_df(ap,   str_ric, cdc, cols=cols)
+    df_p = get_saving_df(ap, str_ric, cdc, cols=cols)
 
     if not df_c.empty: df_c["mn"] = df_c["data_doc"].dt.month
     if not df_p.empty: df_p["mn"] = df_p["data_doc"].dt.month
@@ -440,34 +707,35 @@ def kpi_yoy(
 
     chart = []
     for m1, m2, lbl in periodi:
-        gc = df_c[(df_c["mn"] >= m1) & (df_c["mn"] <= m2)] if not df_c.empty else pd.DataFrame()
-        gp = df_p[(df_p["mn"] >= m1) & (df_p["mn"] <= m2)] if not df_p.empty else pd.DataFrame()
-        if len(gc) == 0 and len(gp) == 0: continue
+        gc_df = df_c[(df_c["mn"] >= m1) & (df_c["mn"] <= m2)] if not df_c.empty else pd.DataFrame()
+        gp_df = df_p[(df_p["mn"] >= m1) & (df_p["mn"] <= m2)] if not df_p.empty else pd.DataFrame()
+        if len(gc_df) == 0 and len(gp_df) == 0: continue
 
-        parziale = len(gc) > 0 and mese_max < m2
-        if   granularita == "mensile":    label = MESI_IT.get(m1, lbl)
-        elif granularita == "bimestrale": label = f"{MESI_IT[m1]}–{MESI_IT[m2]}"
+        parziale = len(gc_df) > 0 and mese_max < m2
+        if   granularita == "mensile":    label = MESI.get(m1, lbl)
+        elif granularita == "bimestrale": label = f"{MESI[m1]}–{MESI[m2]}"
         elif granularita == "quarter":    label = lbl
-        elif granularita == "semestrale": label = f"{lbl} ({MESI_IT[m1]}–{MESI_IT[m2]})"
+        elif granularita == "semestrale": label = f"{lbl} ({MESI[m1]}–{MESI[m2]})"
         else:                             label = str(anno)
 
-        kc, kp = calc_kpi(gc), calc_kpi(gp)
+        kc, kp = calc_kpi(gc_df), calc_kpi(gp_df)
         chart.append({
             "label": label, "m_start": m1, "m_end": m2, "parziale": parziale,
-            "ha_dati_curr": len(gc) > 0, "ha_dati_prev": len(gp) > 0,
-            f"listino_{anno}":    kc["listino"],
-            f"impegnato_{anno}":  kc["impegnato"],
-            f"saving_{anno}":     kc["saving"],
-            f"perc_saving_{anno}":kc["perc_saving"],
-            f"n_neg_{anno}":      kc["n_negoziati"],
-            f"listino_{ap}":      kp["listino"],
-            f"impegnato_{ap}":    kp["impegnato"],
-            f"saving_{ap}":       kp["saving"],
-            f"perc_saving_{ap}":  kp["perc_saving"],
-            f"n_neg_{ap}":        kp["n_negoziati"],
-            "delta_saving":       delta(kc["saving"],    kp["saving"])    if not parziale else None,
+            "ha_dati_curr": len(gc_df) > 0, "ha_dati_prev": len(gp_df) > 0,
+            f"listino_{anno}":     kc["listino"],
+            f"impegnato_{anno}":   kc["impegnato"],
+            f"saving_{anno}":      kc["saving"],
+            f"perc_saving_{anno}": kc["perc_saving"],
+            f"n_neg_{anno}":       kc["n_negoziati"],
+            f"listino_{ap}":       kp["listino"],
+            f"impegnato_{ap}":     kp["impegnato"],
+            f"saving_{ap}":        kp["saving"],
+            f"perc_saving_{ap}":   kp["perc_saving"],
+            f"n_neg_{ap}":         kp["n_negoziati"],
+            "delta_saving":       delta(kc["saving"], kp["saving"])    if not parziale else None,
             "delta_impegnato":    delta(kc["impegnato"], kp["impegnato"]) if not parziale else None,
-            "delta_perc_saving":  round(kc["perc_saving"] - kp["perc_saving"], 2) if kp["perc_saving"] and not parziale else None,
+            "delta_perc_saving":  round(kc["perc_saving"] - kp["perc_saving"], 2)
+                                  if kp["perc_saving"] and not parziale else None,
         })
 
     mesi_interi = set()
@@ -484,21 +752,23 @@ def kpi_yoy(
     if mese_max and mese_max < 12:
         nota = f"Dati {anno} disponibili fino al {df_c['data_doc'].max().date() if not df_c.empty else '—'}."
         if ult_giorno < 20 and mese_max > 1:
-            nota += f" {MESI_IT.get(mese_max,'')} è parziale ed è escluso dal confronto."
+            nota += f" {MESI.get(mese_max, '')} è parziale ed è escluso dal confronto."
 
     return {
         "anno": anno, "anno_precedente": ap, "granularita": granularita,
         "chart_data": chart,
         "kpi_headline": {
             "corrente": kc_hl, "precedente": kp_hl,
-            "label_curr": f"Gen–{MESI_IT.get(mc,'?')} {anno}",
-            "label_prev": f"Gen–{MESI_IT.get(mc,'?')} {ap}",
+            "label_curr": f"Gen–{MESI.get(mc, '?')} {anno}",
+            "label_prev": f"Gen–{MESI.get(mc, '?')} {ap}",
             "delta": {
                 "listino":        delta(kc_hl["listino"],       kp_hl["listino"]),
                 "impegnato":      delta(kc_hl["impegnato"],     kp_hl["impegnato"]),
                 "saving":         delta(kc_hl["saving"],        kp_hl["saving"]),
-                "perc_saving":    round(kc_hl["perc_saving"]    - kp_hl["perc_saving"],    2) if kp_hl["perc_saving"]    else None,
-                "perc_negoziati": round(kc_hl["perc_negoziati"] - kp_hl["perc_negoziati"], 2) if kp_hl["perc_negoziati"] else None,
+                "perc_saving":    round(kc_hl["perc_saving"] - kp_hl["perc_saving"], 2)
+                                  if kp_hl["perc_saving"] else None,
+                "perc_negoziati": round(kc_hl["perc_negoziati"] - kp_hl["perc_negoziati"], 2)
+                                  if kp_hl["perc_negoziati"] else None,
             }
         },
         "nota": nota, "mese_max": mese_max, "ultimo_giorno": ult_giorno,
@@ -525,21 +795,67 @@ def kpi_yoy_cdc(anno: int = Query(...)):
         f"listino_{ap}":     prev.get(c, {}).get("listino", 0),
     } for c in all_cdc]
 
-@app.get("/kpi/saving/mensile-con-area")
-def kpi_mensile_area(anno: Optional[int] = Query(None), cdc: Optional[str] = Query(None)):
-    df = get_saving_df(anno, cdc=cdc,
-        cols="data_doc,str_ric,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,alfa_documento,accred_albo")
+
+# ─────────────────────────────────────────────────────────────────
+# RISORSE ANALYTICS
+# ─────────────────────────────────────────────────────────────────
+
+@app.get("/kpi/risorse/riepilogo")
+def kpi_risorse():
+    rows = query("resource_performance")
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return {"available": False, "reason": "Nessun file risorse caricato. Vai in Carica Dati e importa il file team analytics."}
+    n = len(df)
+    risorse = df["risorsa"].dropna().nunique()
+    avg_pratiche = df["pratiche_gestite"].dropna().mean()
+    tot_saving = df["saving_generato"].dropna().sum()
+    return {
+        "available": True,
+        "n_record": n,
+        "n_risorse": risorse,
+        "avg_pratiche_gestite": round(float(avg_pratiche), 1) if avg_pratiche else 0,
+        "tot_saving_generato": round(float(tot_saving), 2) if tot_saving else 0,
+    }
+
+@app.get("/kpi/risorse/per-risorsa")
+def kpi_risorse_per_risorsa(anno: Optional[int] = Query(None)):
+    rows = query("resource_performance")
+    df = pd.DataFrame(rows)
     if df.empty: return []
-    df["mese"] = df["data_doc"].dt.strftime("%Y-%m")
-    MLBL = {f"{anno}-{m:02d}": MESI_IT[m] for m in range(1, 13)} if anno else {}
+    if anno:
+        df = df[df["year"] == anno]
+    if df.empty: return []
     result = []
-    for mese, grp in df.groupby("mese"):
+    for risorsa, g in df.groupby("risorsa"):
+        result.append({
+            "risorsa": risorsa,
+            "struttura": g["struttura"].dropna().mode().iloc[0] if not g["struttura"].dropna().empty else None,
+            "pratiche_gestite":      int(g["pratiche_gestite"].sum()),
+            "pratiche_aperte":       int(g["pratiche_aperte"].sum()),
+            "pratiche_chiuse":       int(g["pratiche_chiuse"].sum()),
+            "saving_generato":       round(float(g["saving_generato"].sum()), 2),
+            "negoziazioni_concluse": int(g["negoziazioni_concluse"].sum()),
+            "tempo_medio_giorni":    round(float(g["tempo_medio_giorni"].mean()), 1) if not g["tempo_medio_giorni"].dropna().empty else None,
+            "efficienza":            round(float(g["efficienza"].mean()), 1) if not g["efficienza"].dropna().empty else None,
+        })
+    return sorted(result, key=lambda x: x["saving_generato"], reverse=True)
+
+@app.get("/kpi/risorse/mensile")
+def kpi_risorse_mensile(anno: Optional[int] = Query(None)):
+    rows = query("resource_performance")
+    df = pd.DataFrame(rows)
+    if df.empty: return []
+    if anno:
+        df = df[df["year"] == anno]
+    if df.empty: return []
+    result = []
+    for mese, g in df.groupby("mese_label"):
         result.append({
             "mese": mese,
-            "label": MLBL.get(mese, mese),
-            **{f"tot_{k}": v for k, v in calc_kpi(grp).items()},
-            **{f"ric_{k}": v for k, v in calc_kpi(grp[grp["str_ric"] == "RICERCA"]).items()},
-            **{f"str_{k}": v for k, v in calc_kpi(grp[grp["str_ric"] == "STRUTTURA"]).items()},
+            "pratiche_totali": int(g["pratiche_gestite"].sum()),
+            "saving_totale":   round(float(g["saving_generato"].sum()), 2),
+            "n_risorse_attive": g["risorsa"].nunique(),
         })
     return sorted(result, key=lambda x: x["mese"])
 
@@ -547,6 +863,7 @@ def kpi_mensile_area(anno: Optional[int] = Query(None), cdc: Optional[str] = Que
 # ─────────────────────────────────────────────────────────────────
 # TEMPI & NC
 # ─────────────────────────────────────────────────────────────────
+
 @app.get("/kpi/tempi/riepilogo")
 def kpi_tempi():
     rows = query("tempo_attraversamento")
@@ -576,11 +893,11 @@ def kpi_tempi_mensile():
             "avg_total":      round(float(g["total_days"].mean()), 1),
             "avg_purchasing": round(float(g["days_purchasing"].mean()), 1),
             "avg_auto":       round(float(g["days_auto"].mean()), 1),
-            "avg_other":      round(float(g["days_other"].mean()), 1) if "days_other" in g.columns else 0,
+            "avg_other":      round(float(g["days_other"].mean()), 1) if "days_other" in g else 0,
             "n_ordini":       n,
-            "n_bottleneck_purchasing": int((g["bottleneck"] == "PURCHASING").sum()) if "bottleneck" in g.columns else 0,
-            "n_bottleneck_auto":       int((g["bottleneck"] == "AUTO").sum()) if "bottleneck" in g.columns else 0,
-            "n_bottleneck_other":      int((g["bottleneck"] == "OTHER").sum()) if "bottleneck" in g.columns else 0,
+            "n_bottleneck_purchasing": int((g["bottleneck"] == "PURCHASING").sum()) if "bottleneck" in g else 0,
+            "n_bottleneck_auto":       int((g["bottleneck"] == "AUTO").sum()) if "bottleneck" in g else 0,
+            "n_bottleneck_other":      int((g["bottleneck"] == "OTHER").sum()) if "bottleneck" in g else 0,
         })
     return sorted(result, key=lambda x: x["mese"])
 
@@ -603,9 +920,12 @@ def kpi_nc():
     n = len(df); nnc = int(df["non_conformita"].sum())
     df_nc = df[df["non_conformita"] == True]
     avg_delta_nc = round(float(df_nc["delta_giorni"].mean()), 1) if len(df_nc) > 0 else 0.0
-    return {"n_totale": n, "n_nc": nnc, "perc_nc": safe_pct(nnc, n),
-            "avg_delta_giorni": round(float(df["delta_giorni"].mean()), 1),
-            "avg_delta_nc": avg_delta_nc}
+    return {
+        "n_totale": n, "n_nc": nnc,
+        "perc_nc": safe_pct(nnc, n),
+        "avg_delta_giorni": round(float(df["delta_giorni"].mean()), 1),
+        "avg_delta_nc": avg_delta_nc,
+    }
 
 @app.get("/kpi/nc/mensile")
 def kpi_nc_mensile():
@@ -648,8 +968,9 @@ def kpi_nc_tipo():
 
 
 # ─────────────────────────────────────────────────────────────────
-# FILTRI + EXPORT + UTILITY
+# FILTRI + EXPORT
 # ─────────────────────────────────────────────────────────────────
+
 @app.get("/filtri/disponibili")
 def filtri_disponibili(anno: Optional[int] = Query(None)):
     fs = [lambda q, a=anno: q.gte("data_doc", f"{a}-01-01").lte("data_doc", f"{a}-12-31")] if anno else []
@@ -677,23 +998,20 @@ def export_excel(body: dict = Body(...)):
     anno      = filtri_in.get("anno")
     str_ric   = filtri_in.get("str_ric")
     cdc       = filtri_in.get("cdc")
-
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         if "riepilogo" in sezioni:
             k = kpi_riepilogo(anno=anno, str_ric=str_ric, cdc=cdc)
             pd.DataFrame([
-                ["Listino €",    k["listino"],              "Prezzo di partenza"],
-                ["Impegnato €",  k["impegnato"],            "Quanto paghiamo"],
-                ["Saving €",     k["saving"],               "Il nostro lavoro"],
-                ["% Saving",     f"{k['perc_saving']}%",    "saving/listino×100"],
-                ["N° Righe",     k["n_righe"],              ""],
-                ["N° Negoziabili", k["n_doc_neg"],          ""],
-                ["N° Negoziati", k["n_negoziati"],          ""],
+                ["Listino €",    k["listino"],   "Prezzo di partenza"],
+                ["Impegnato €",  k["impegnato"], "Quanto paghiamo"],
+                ["Saving €",     k["saving"],    "Il nostro lavoro"],
+                ["% Saving",     f"{k['perc_saving']}%", "saving/listino×100"],
+                ["N° Righe",     k["n_righe"],   ""],
+                ["N° Negoziabili", k["n_doc_neg"], ""],
+                ["N° Negoziati", k["n_negoziati"], ""],
                 ["% Negoziati",  f"{k['perc_negoziati']}%", ""],
-                ["N° Albo",      k["n_albo"],               ""],
-                ["% Albo",       f"{k['perc_albo']}%",      ""],
-            ], columns=["KPI", "Valore", "Note"]).to_excel(writer, index=False, sheet_name="Riepilogo")
+            ], columns=["KPI","Valore","Note"]).to_excel(writer, index=False, sheet_name="Riepilogo")
         if "mensile" in sezioni:
             d = kpi_mensile(anno=anno, str_ric=str_ric, cdc=cdc)
             if d: pd.DataFrame(d).to_excel(writer, index=False, sheet_name="Mensile")
@@ -703,9 +1021,6 @@ def export_excel(body: dict = Body(...)):
         if "alfa_documento" in sezioni:
             d = kpi_per_alfa(anno=anno, str_ric=str_ric, cdc=cdc)
             if d: pd.DataFrame(d).to_excel(writer, index=False, sheet_name="Per Tipo Documento")
-        if "macro_categoria" in sezioni:
-            d = kpi_per_macro(anno=anno, str_ric=str_ric, cdc=cdc)
-            if d: pd.DataFrame(d).to_excel(writer, index=False, sheet_name="Macro Categoria")
         if "top_fornitori" in sezioni:
             d = kpi_top_fornitori(anno=anno, str_ric=str_ric, cdc=cdc)
             if d: pd.DataFrame(d).to_excel(writer, index=False, sheet_name="Top Fornitori")
@@ -725,23 +1040,23 @@ def delete_upload(upload_id: str):
 
 @app.get("/wake")
 def wake():
-    return {"ok": True}
+    return {"ok": True, "version": "9.0.0"}
 
 @app.get("/health")
 def health():
+    try:
+        client = sb()
+        client.table("upload_log").select("id").limit(1).execute()
+        db_ok = True
+    except Exception:
+        db_ok = False
     return {
-        "status": "ok", "version": "8.0.0",
+        "status": "ok" if db_ok else "degraded",
+        "version": "9.0.0",
+        "database": "reachable" if db_ok else "unreachable",
         "kpi_definitions": {
-            "listino":   "Imp. Iniziale € — prezzo di partenza senza negoziazione",
-            "impegnato": "Imp. Negoziato € — quanto paghiamo effettivamente",
-            "saving":    "Saving.1 — differenza (listino - impegnato) = lavoro UA",
-            "perc_saving": "saving / listino × 100",
+            "listino":   "imp_listino_eur  = Imp. Iniziale €",
+            "impegnato": "imp_impegnato_eur = Imp. Negoziato €",
+            "saving":    "saving_eur = Saving.1",
         },
-        "reference_2025": {
-            "righe": 10413,
-            "listino": 77465963.18,
-            "impegnato": 69676501.89,
-            "saving": 7789461.29,
-            "perc_saving": 10.06,
-        }
     }
