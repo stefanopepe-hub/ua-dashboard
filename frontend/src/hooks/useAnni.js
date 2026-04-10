@@ -1,10 +1,19 @@
-import { useKpi } from './useKpi'
+import { useState, useEffect } from 'react'
 import { api } from '../utils/api'
 
 export function useAnni() {
-  const { data, loading } = useKpi(() => api.anniDisponibili(), [])
-  const anni = (data || []).map(d => d.anno)
-  // default = anno più recente disponibile
-  const defaultAnno = anni.length > 0 ? String(anni[0]) : String(new Date().getFullYear())
-  return { anni, loading, defaultAnno }
+  const [anni, setAnni] = useState([])
+  const [defaultAnno, setDefault] = useState('')
+
+  useEffect(() => {
+    api.anni()
+      .then(rows => {
+        const list = rows.map(r => r.anno)
+        setAnni(list)
+        if (list.length > 0) setDefault(String(list[0]))
+      })
+      .catch(() => {})
+  }, [])
+
+  return { anni, defaultAnno }
 }
