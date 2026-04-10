@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, TrendingUp, Clock, AlertTriangle,
-  Building2, FileText, Upload, Database, ChevronRight,
+  Building2, FileText, Upload, Database, Users,
+  Activity, ChevronRight,
 } from 'lucide-react'
 
 const NAV = [
@@ -23,8 +24,9 @@ const NAV = [
   {
     section: 'Operativo',
     items: [
-      { to: '/tempi',     icon: Clock,           label: 'Tempi Attraversamento' },
-      { to: '/nc',        icon: AlertTriangle,   label: 'Non Conformità' },
+      { to: '/risorse',   icon: Users,       label: 'Risorse' },
+      { to: '/tempi',     icon: Clock,       label: 'Tempi Attraversamento' },
+      { to: '/nc',        icon: AlertTriangle, label: 'Non Conformità' },
     ],
   },
   {
@@ -36,18 +38,55 @@ const NAV = [
   },
 ]
 
+// Stati possibili: 'starting' | 'ok' | 'degraded' | 'unreachable'
+const STATUS_CONFIG = {
+  starting:    { dot: 'bg-amber-400 animate-pulse', text: 'text-amber-500', label: 'Avvio in corso…' },
+  ok:          { dot: 'bg-green-400',               text: 'text-green-600', label: 'Connesso' },
+  degraded:    { dot: 'bg-amber-400',               text: 'text-amber-600', label: 'Parzialmente degradato' },
+  unreachable: { dot: 'bg-red-400',                 text: 'text-red-500',  label: 'Verifica connessione…' },
+}
+
 export default function Layout({ children }) {
-  const [backendStatus, setBackendStatus] = useState('waking') // waking | ok | error
+  const [status, setStatus] = useState('starting')
+  const [retries, setRetries] = useState(0)
   const location = useLocation()
 
-  useEffect(() => {
+  const checkHealth = useCallback(async () => {
     const BASE = import.meta.env.VITE_API_URL || ''
-    fetch(`${BASE}/wake`, { signal: AbortSignal.timeout(15000) })
-      .then(() => setBackendStatus('ok'))
-      .catch(() => setBackendStatus('error'))
+    try {
+      // Timeout generoso per Render free tier (cold start ~30s)
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), 60000)
+      const r = await fetch(`${BASE}/health`, { signal: ctrl.signal })
+      clearTimeout(timer)
+      if (!r.ok) {
+        setStatus('degraded')
+        return
+      }
+      const data = await r.json()
+      setStatus(data.database === 'reachable' ? 'ok' : 'degraded')
+    } catch (e) {
+      // AbortError = timeout, non unreachable
+      if (e.name === 'AbortError') {
+        setStatus('starting')
+      } else {
+        setStatus('unreachable')
+      }
+      // Riprova dopo 30s, max 5 volte
+      if (retries < 5) {
+        setTimeout(() => {
+          setRetries(r => r + 1)
+          checkHealth()
+        }, 30000)
+      }
+    }
+  }, [retries])
+
+  useEffect(() => {
+    checkHealth()
   }, [])
 
-  // Titolo pagina corrente
+  const sc = STATUS_CONFIG[status]
   const currentNav = NAV.flatMap(s => s.items).find(i =>
     i.to === '/' ? location.pathname === '/' : location.pathname.startsWith(i.to)
   )
@@ -86,25 +125,22 @@ export default function Layout({ children }) {
           ))}
         </nav>
 
-        {/* Backend status */}
+        {/* Health status */}
         <div className="px-5 py-4 border-t border-gray-50">
-          <div className="flex items-center gap-2">
-            <div className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${
-              backendStatus === 'ok'     ? 'bg-green-400' :
-              backendStatus === 'error'  ? 'bg-red-400' :
-              'bg-amber-400 animate-pulse'
-            }`} />
-            <span className={`text-[10px] font-medium ${
-              backendStatus === 'ok'     ? 'text-green-600' :
-              backendStatus === 'error'  ? 'text-red-500' :
-              'text-amber-500'
-            }`}>
-              {backendStatus === 'ok'    ? 'Connesso' :
-               backendStatus === 'error' ? 'Non raggiungibile' :
-               'Connessione in corso…'}
-            </span>
-          </div>
-          <p className="text-[10px] text-gray-300 mt-0.5 font-medium">v8 · Uso interno</p>
+          <button
+            onClick={checkHealth}
+            className="flex items-center gap-2 w-full hover:opacity-70 transition-opacity"
+            title="Clicca per aggiornare lo stato"
+          >
+            <div className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${sc.dot}`} />
+            <span className={`text-[10px] font-medium ${sc.text}`}>{sc.label}</span>
+          </button>
+          {status === 'starting' && (
+            <p className="text-[9px] text-gray-300 mt-0.5">
+              Render free tier: attendi fino a 60s al primo avvio
+            </p>
+          )}
+          <p className="text-[10px] text-gray-300 mt-0.5 font-medium">v9 · Uso interno</p>
         </div>
       </aside>
 
@@ -112,18 +148,18 @@ export default function Layout({ children }) {
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Top bar */}
         <header className="h-14 bg-white border-b border-gray-100 px-6 flex items-center justify-between flex-shrink-0 shadow-sm">
-          <div className="flex items-center gap-2 text-sm text-gray-400">
-            <span className="font-medium text-gray-900">{currentNav?.label || 'Dashboard'}</span>
+          <div className="flex items-center gap-2 text-sm">
+            <span className="font-semibold text-gray-900">{currentNav?.label || 'Dashboard'}</span>
           </div>
-          {backendStatus === 'waking' && (
+          {status === 'starting' && (
             <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-50 border border-amber-100 px-3 py-1.5 rounded-lg">
               <div className="h-3 w-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-              Backend in avvio (free tier — ~30s)
+              Backend in avvio — le analisi saranno disponibili a breve
             </div>
           )}
         </header>
 
-        {/* Page content */}
+        {/* Content */}
         <main className="flex-1 overflow-y-auto">
           <div className="p-6 max-w-screen-2xl mx-auto">
             {children}
