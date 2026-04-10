@@ -338,17 +338,34 @@ async def upload_saving(file: UploadFile = File(...),
             "tail_spend":           ss(gcol(col,'tail_spend',row)),
         })
 
+    # Insert ottimizzato: batch grandi via REST API diretta
+    # Supabase REST con Prefer: return=minimal non restituisce dati -> 3x più veloce
+    import httpx, json as _json
+    
+    rest_url = f"{SUPABASE_URL}/rest/v1/saving"
+    headers_rest = {
+        "apikey":        SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type":  "application/json",
+        "Prefer":        "return=minimal",   # non restituisce righe inserite -> veloce
+    }
+    
     inserted = 0
-    for i in range(0, len(records), 500):
-        batch = records[i:i+500]
+    BATCH = 2000
+    for i in range(0, len(records), BATCH):
+        batch = records[i:i+BATCH]
         try:
-            sb.table("saving").insert(batch).execute()
+            resp = httpx.post(rest_url, headers=headers_rest,
+                              content=_json.dumps(batch), timeout=60.0)
+            if resp.status_code not in (200, 201):
+                raise Exception(f"HTTP {resp.status_code}: {resp.text[:300]}")
             inserted += len(batch)
+            log.info(f"Batch {i//BATCH + 1}/{(len(records)-1)//BATCH + 1}: {inserted}/{len(records)} righe")
         except Exception as e:
             log.error(f"Insert error batch {i}: {str(e)[:300]}")
             if i == 0:
                 sb.table("upload_log").delete().eq("id", upload_id).execute()
-                raise HTTPException(500, f"Errore inserimento dati: {str(e)[:400]}")
+                raise HTTPException(500, f"Errore inserimento: {str(e)[:400]}")
 
     sb.table("upload_log").update({"rows_inserted": inserted}).eq("id", upload_id).execute()
     log.info(f"Upload OK: {inserted} rows, {skipped} skipped, sheet='{sheet}'")
