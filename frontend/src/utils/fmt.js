@@ -1,56 +1,48 @@
-export const fmtEur = (v, decimals = 0) => {
+// Formattazione numeri — unica fonte di verità
+
+export function fmtEur(v, decimali = 0) {
   if (v == null || isNaN(v)) return '—'
-  return new Intl.NumberFormat('it-IT', {
-    style: 'currency',
-    currency: 'EUR',
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  }).format(v)
+  const abs = Math.abs(v)
+  if (abs >= 1_000_000) return `€${(v / 1_000_000).toFixed(2)}M`
+  if (abs >= 1_000)     return `€${(v / 1_000).toFixed(1)}K`
+  return `€${v.toFixed(decimali)}`
 }
 
-export const fmtPct = (v, decimals = 1) => {
+export function fmtEurFull(v) {
   if (v == null || isNaN(v)) return '—'
-  return `${Number(v).toFixed(decimals)}%`
+  return new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', maximumFractionDigits: 0 }).format(v)
 }
 
-export const fmtNum = (v) => {
+export function fmtPct(v) {
   if (v == null || isNaN(v)) return '—'
-  return new Intl.NumberFormat('it-IT').format(v)
+  return `${Number(v).toFixed(2)}%`
 }
 
-export const fmtDays = (v) => {
+export function fmtNum(v) {
+  if (v == null || isNaN(v)) return '—'
+  return Number(v).toLocaleString('it-IT')
+}
+
+export function fmtDays(v) {
   if (v == null || isNaN(v)) return '—'
   return `${Number(v).toFixed(1)} gg`
 }
 
-export const MESI_IT = {
-  '01': 'Gen', '02': 'Feb', '03': 'Mar', '04': 'Apr',
-  '05': 'Mag', '06': 'Giu', '07': 'Lug', '08': 'Ago',
-  '09': 'Set', '10': 'Ott', '11': 'Nov', '12': 'Dic',
-}
-
-export const shortMese = (ym) => {
-  if (!ym) return ''
-  const [, m] = ym.split('-')
-  return MESI_IT[m] || ym
-}
-
-// Telethon brand colors
 export const COLORS = {
-  blue: '#0057A8',
-  red: '#D81E1E',
-  green: '#16a34a',
+  blue:   '#0057A8',
+  red:    '#D81E1E',
+  green:  '#16a34a',
   orange: '#ea580c',
+  teal:   '#0891b2',
   purple: '#7c3aed',
-  teal: '#0891b2',
-  gray: '#6b7280',
+  gray:   '#6b7280',
 }
 
 export const CDC_COLORS = {
-  GD: '#0057A8',
-  TIGEM: '#D81E1E',
-  FT: '#7c3aed',
-  STRUTTURA: '#0891b2',
-  Terapie: '#ea580c',
-  TIGET: '#16a34a',
+  GD:        '#0057A8',
+  TIGEM:     '#D81E1E',
+  TIGET:     '#16a34a',
+  FT:        '#ea580c',
+  STRUTTURA: '#7c3aed',
+  Terapie:   '#0891b2',
 }
