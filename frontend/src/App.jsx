@@ -8,6 +8,7 @@ import Fornitori from './pages/Fornitori'
 import AlfaDoc from './pages/AlfaDoc'
 import Upload from './pages/Upload'
 import DataQuality from './pages/DataQuality'
+import Risorse from './pages/Risorse'
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/alfa-doc"  element={<AlfaDoc />} />
         <Route path="/upload"    element={<Upload />} />
         <Route path="/quality"   element={<DataQuality />} />
+        <Route path="/risorse"   element={<Risorse />} />
       </Routes>
     </Layout>
   )
