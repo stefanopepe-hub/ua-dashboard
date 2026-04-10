@@ -46,3 +46,15 @@ export const CDC_COLORS = {
   STRUTTURA: '#7c3aed',
   Terapie:   '#0891b2',
 }
+
+export function shortMese(ym) {
+  // Converte "2025-03" -> "Mar"
+  if (!ym) return '—'
+  const MESI = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
+  const parts = String(ym).split('-')
+  if (parts.length === 2) {
+    const m = parseInt(parts[1]) - 1
+    return MESI[m] || ym
+  }
+  return ym
+}
