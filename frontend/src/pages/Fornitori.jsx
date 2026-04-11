@@ -120,18 +120,18 @@ export default function Fornitori() {
               {(topFornitori || []).map((r, i) => (
                 <tr key={i} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
                   <td className="py-2 px-3 text-gray-400 text-xs">{i + 1}</td>
-                  <td className="py-2 px-3 font-medium max-w-xs">
+                  <td className="py-2.5 px-3 font-medium" style={{minWidth:'200px', maxWidth:'300px'}}>
                     <span className="block truncate" title={r.ragione_sociale}>{r.ragione_sociale}</span>
                   </td>
-                  <td className="py-2 px-3 text-right tabular-nums text-gray-500">{fmtEur(r.listino)}</td>
-                  <td className="py-2 px-3 text-right tabular-nums font-medium">{fmtEur(r.impegnato)}</td>
-                  <td className="py-2 px-3 text-right tabular-nums text-green-700">{fmtEur(r.saving)}</td>
-                  <td className="py-2 px-3 text-right tabular-nums">{fmtPct(r.perc_saving)}</td>
-                  <td className="py-2 px-3 text-right">{fmtNum(r.n_righe)}</td>
-                  <td className="py-2 px-3 text-center">
-                    <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium
-                      ${r.albo ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                      {r.albo ? '✓ SI' : 'NO'}
+                  <td className="py-2.5 px-3 text-right tabular-nums text-gray-500 whitespace-nowrap">{fmtEur(r.listino)}</td>
+                  <td className="py-2.5 px-3 text-right tabular-nums font-medium whitespace-nowrap">{fmtEur(r.impegnato)}</td>
+                  <td className="py-2.5 px-3 text-right tabular-nums text-green-700 whitespace-nowrap">{fmtEur(r.saving)}</td>
+                  <td className="py-2.5 px-3 text-right tabular-nums whitespace-nowrap">{fmtPct(r.perc_saving)}</td>
+                  <td className="py-2.5 px-3 text-right whitespace-nowrap">{fmtNum(r.n_righe)}</td>
+                  <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold
+                      ${r.albo ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-gray-50 text-gray-500 border border-gray-200'}`}>
+                      {r.albo ? '✓ Accreditato' : 'Non accreditato'}
                     </span>
                   </td>
                 </tr>
