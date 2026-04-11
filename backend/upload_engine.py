@@ -448,14 +448,53 @@ def batch_insert(client, table: str, records: List[dict], batch_size: int = 5000
             inserted += len(batch)
             log.info(f"Inserted batch {i//batch_size + 1}: {inserted}/{len(records)}")
         except Exception as e:
-            err_msg = str(e)[:400]
-            log.error(f"Batch insert error at {i}: {err_msg}")
-            errors.append(f"Batch {i//batch_size + 1}: {err_msg[:100]}")
+            raw_err = str(e)
+            log.error(f"DB batch insert error table={table} batch={i//batch_size+1}: {raw_err[:800]}")
+            friendly = _translate_db_error(raw_err, table)
+            errors.append(friendly)
             if i == 0 and not inserted:
-                # Primo batch fallito → errore fatale
-                raise RuntimeError(f"DB insert failed: {err_msg}")
+                raise RuntimeError(friendly)
 
     return inserted, errors
+
+
+def _translate_db_error(raw_error: str, table: str) -> str:
+    """
+    Traduce errori PostgreSQL crudi in messaggi business-friendly.
+    Non espone mai stack trace, codici interni, o nomi di colonne DB all'utente.
+    Logga il dettaglio completo internamente.
+    """
+    raw = raw_error.lower()
+
+    if '23514' in raw or ('check' in raw and 'violat' in raw):
+        return (
+            "Il file non è stato importato perché il tipo di file rilevato non è compatibile "
+            "con il formato atteso. Prova con il pulsante 'Auto' per la classificazione automatica."
+        )
+    if '23505' in raw or 'unique' in raw or 'duplicate' in raw:
+        return (
+            "Alcune righe non sono state importate: dati già presenti nel database. "
+            "Vai in Data Quality per eliminare il caricamento precedente e reimportare."
+        )
+    if '23502' in raw or 'not null' in raw:
+        return (
+            "Import parziale: alcune righe mancavano di campi obbligatori e sono state saltate. "
+            "Le righe valide sono state importate correttamente."
+        )
+    if '23503' in raw or 'foreign key' in raw:
+        return (
+            "Errore di integrità referenziale. "
+            "Verifica di aver caricato i file prerequisiti prima di questo."
+        )
+    if 'timeout' in raw or 'connection' in raw:
+        return (
+            "Il database non ha risposto in tempo. "
+            "L'import potrebbe essere parziale. Controlla Data Quality."
+        )
+    return (
+        "Errore durante il salvataggio. "
+        "I dettagli tecnici sono disponibili nei log di sistema."
+    )
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -489,6 +528,24 @@ def compute_readiness(mr: MappingResult, wbi: WorkbookInspection) -> dict:
         "normalization_notes": _normalization_notes(mr, wbi),
     }
     return readiness
+
+
+
+# Mappa FileFamily → tipo DB per upload_log.tipo
+# Il DB ha CHECK constraint su ('saving', 'tempi', 'nc', 'risorse')
+FAMILY_TO_TIPO_DB = {
+    FileFamily.SAVINGS:         "saving",
+    FileFamily.ORDERS_DETAIL:   "saving",
+    FileFamily.RISORSE:         "risorse",
+    FileFamily.NC:              "nc",
+    FileFamily.TEMPI:           "tempi",
+    FileFamily.SUPPLIER_MASTER: "saving",
+    FileFamily.UNKNOWN:         "saving",
+}
+
+def _family_to_tipo(family: FileFamily) -> str:
+    """Converte FileFamily nel valore 'tipo' accettato dal DB upload_log CHECK constraint."""
+    return FAMILY_TO_TIPO_DB.get(family, "saving")
 
 
 def _family_label(family: FileFamily) -> str:
@@ -754,7 +811,7 @@ def process_upload(
     try:
         lr = client.table("upload_log").insert({
             "filename":           filename,
-            "tipo":               mr.family.value,
+            "tipo":               _family_to_tipo(mr.family),   # compatibile con DB CHECK constraint
             "cdc_filter":         cdc_override,
             "family_detected":    mr.family.value,
             "mapping_confidence": mr.overall_confidence.value,

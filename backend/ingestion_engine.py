@@ -796,11 +796,15 @@ FAMILY_SIGNALS: Dict[FileFamily, Dict[str, float]] = {
         'efficienza':          2.0,
     },
     FileFamily.SUPPLIER_MASTER: {
-        'codice_fornitore': 3.0,
-        'ragione_sociale':  2.0,
-        'accred_albo':      2.5,
-        'data_inizio_comp': 2.0,   # qualification_date
-        'data_fine_comp':   2.0,   # expiry_date
+        # Segnali MOLTO SPECIFICI — devono coesistere per classificare come supplier_master
+        # ragione_sociale e codice_fornitore sono presenti in TUTTI i file saving
+        # quindi li pesiamo poco qui; la distinzione viene dalla COMBINAZIONE
+        'codice_fornitore': 1.0,   # ridotto: presente anche in saving
+        'ragione_sociale':  0.5,   # ridotto: presente in tutti i file
+        'accred_albo':      2.0,
+        'data_inizio_comp': 3.0,   # qualification_date — MOLTO specifico
+        'data_fine_comp':   3.0,   # expiry_date — MOLTO specifico
+        # Solo supplier_master ha date di scadenza accreditamento
     },
 }
 
@@ -848,6 +852,25 @@ def classify_file_family(
     best_fam_str = max(norm_scores, key=norm_scores.get)
     best_fam = FileFamily(best_fam_str)
     best_conf = norm_scores[best_fam_str]
+
+    # Safety rule: SUPPLIER_MASTER richiede segnali MOLTO specifici
+    # Se SAVINGS ha un punteggio significativo, prevale su SUPPLIER_MASTER ambiguo
+    if best_fam == FileFamily.SUPPLIER_MASTER:
+        savings_score = norm_scores.get(FileFamily.SAVINGS.value, 0)
+        # Se il file ha segnali saving decenti (>30%) → non è supplier_master
+        if savings_score > 0.30:
+            best_fam = FileFamily.SAVINGS
+            best_conf = savings_score
+            best_fam_str = FileFamily.SAVINGS.value
+        # Supplier_master richiede date di scadenza (qualification/expiry)
+        elif 'data_inizio_comp' not in col_map and 'data_fine_comp' not in col_map:
+            # Senza date accreditamento → probabile saving o unknown
+            if savings_score > 0.15:
+                best_fam = FileFamily.SAVINGS
+                best_conf = savings_score
+            else:
+                best_fam = FileFamily.UNKNOWN
+                best_conf = 0.1
 
     # Se il punteggio massimo è troppo basso, è UNKNOWN
     if best_conf < 0.15:

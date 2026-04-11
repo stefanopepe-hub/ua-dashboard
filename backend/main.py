@@ -246,82 +246,10 @@ async def upload_auto(
         )
     except Exception as e:
         log.error(f"upload_auto unexpected error: {e}", exc_info=True)
-        raise HTTPException(500, f"Errore imprevisto: {str(e)[:300]}")
-    
-    if result.status == "failed" and not result.upload_id:
-        raise HTTPException(400, result.error or "Upload fallito")
-    
-    return result.to_dict()
-
-@app.post("/upload/saving")
-async def upload_saving_compat(
-    file: UploadFile = File(...),
-    cdc_override: Optional[str] = None,
-    yoy_mode: bool = False,
-):
-    """
-    Endpoint saving — usa /upload/auto internamente.
-    Mantenuto per compatibilità con frontend esistente.
-    """
-    contents = await file.read()
-    try:
-        result = process_upload(
-            file_bytes=contents,
-            filename=file.filename,
-            client=sb(),
-            cdc_override=cdc_override,
-            yoy_mode=yoy_mode,
-        )
-    except Exception as e:
-        raise HTTPException(500, f"Errore: {str(e)[:300]}")
-    
-    if result.status == "failed" and not result.upload_id:
-        raise HTTPException(400, result.error or "Upload fallito")
-    
-    return {
-        "status": result.status,
-        "rows_inserted": result.rows_inserted,
-        "rows_skipped": result.rows_skipped,
-        "upload_id": result.upload_id,
-        "sheet_used": result.sheet_used,
-        "family": result.family,
-        "mapping_confidence": result.mapping_confidence,
-        "mapping_score": result.mapping_score,
-        "available_analyses": result.available_analyses,
-        "blocked_analyses": result.blocked_analyses,
-        "warnings": result.warnings,
-        "year_detected": result.year_detected,
-        "years_found": result.years_found,
-        "yoy_ready": result.yoy_ready,
-    }
-
-
-@app.post("/upload/inspect")
-async def upload_inspect(file: UploadFile = File(...)):
-    """
-    Preview intelligente — stesso engine del vero import.
-    Ritorna: family, confidence, mapped fields, analisi disponibili/bloccate, YoY info.
-    """
-    contents = await file.read()
-    try:
-        mr = inspect_bytes(contents, file.filename)
-        result = mapping_result_to_dict(mr)
-        wbi = inspect_and_load(contents, file.filename)
-        readiness = compute_readiness(mr, wbi)
-        result.update({
-            "year_detected":        readiness["year_detected"],
-            "years_found":          readiness["years_found"],
-            "yoy_ready":            readiness["yoy_ready"],
-            "yoy_note":             readiness["yoy_note"],
-            "normalization_notes":  readiness["normalization_notes"],
-            "family_label":         readiness["family_label"],
-        })
-        return result
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, "Impossibile analizzare il file. Verifica il formato Excel.")
     except Exception as e:
         log.error(f"inspect error: {e}", exc_info=True)
-        raise HTTPException(400, f"Errore ispezione: {str(e)[:300]}")
+        raise HTTPException(400, "Impossibile analizzare il file. Verifica che sia un Excel valido (.xlsx/.xls).")
 
 
 @app.post("/upload/risorse")
@@ -335,7 +263,7 @@ async def upload_risorse_compat(file: UploadFile = File(...)):
             client=sb(),
         )
     except Exception as e:
-        raise HTTPException(500, f"Errore: {str(e)[:300]}")
+        raise HTTPException(500, "Errore interno. Controlla i log per i dettagli.")
     
     if result.status == "failed" and not result.upload_id:
         # Prova con forced_family='risorse' se classificato male
@@ -366,9 +294,9 @@ async def upload_tempi_compat(file: UploadFile = File(...)):
     try:
         result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
     except Exception as e:
-        raise HTTPException(500, f"Errore: {str(e)[:300]}")
+        raise HTTPException(500, "Errore interno. Il file potrebbe non essere nel formato atteso.")
     if result.status == "failed" and not result.upload_id:
-        raise HTTPException(400, result.error or "File tempi non riconoscibile")
+        raise HTTPException(400, result.error or "File tempi attraversamento non riconoscibile. Verifica le colonne Year_Month, Total_Days, Days_Purchasing.")
     return {"status": result.status, "rows": result.rows_inserted,
             "family": result.family, "warnings": result.warnings}
 
@@ -380,7 +308,7 @@ async def upload_nc_compat(file: UploadFile = File(...)):
     try:
         result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
     except Exception as e:
-        raise HTTPException(500, f"Errore: {str(e)[:300]}")
+        raise HTTPException(500, "Errore interno. Controlla i log per i dettagli.")
     if result.status == "failed" and not result.upload_id:
         raise HTTPException(400, result.error or "File NC non riconoscibile")
     return {"status": result.status, "rows": result.rows_inserted,
