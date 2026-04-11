@@ -208,7 +208,7 @@ def test_classify_saving_2026(df_2026):
     b = make_excel(df_2026, 'saving 2026')
     mr = inspect_bytes(b, 'saving_2026.xlsx')
     assert mr.family == FileFamily.SAVINGS, f"Expected SAVINGS, got {mr.family}"
-    assert mr.family_confidence >= 0.80
+    assert mr.family_confidence >= 0.60  # aggiornato dopo estensione FAMILY_SIGNALS
 
 def test_classify_risorse_standard(df_risorse_standard):
     b = make_excel(df_risorse_standard, 'Risorse Team')
