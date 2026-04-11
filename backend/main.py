@@ -407,9 +407,14 @@ def kpi_riepilogo(
     cdc: Optional[str] = Query(None), alfa: Optional[str] = Query(None),
     macro: Optional[str] = Query(None)
 ):
-    df = get_saving_df(anno, str_ric, cdc, alfa, macro,
-        cols="imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,accred_albo,alfa_documento")
-    return calc_kpi(df)
+    try:
+        df = get_saving_df(anno, str_ric, cdc, alfa, macro,
+            cols="imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,accred_albo,alfa_documento")
+        return calc_kpi(df)
+
+    except Exception as e:
+        log.error(f"kpi_riepilogo error: {e}", exc_info=True)
+        raise HTTPException(500, "Errore nel calcolo KPI. Verifica i dati caricati.")
 
 @app.get("/kpi/saving/mensile")
 def kpi_mensile(
@@ -579,89 +584,94 @@ def kpi_yoy(
     anno: int = Query(...), granularita: str = Query("mensile"),
     str_ric: Optional[str] = Query(None), cdc: Optional[str] = Query(None)
 ):
-    ap = anno - 1
-    periodi = GRAN_MAP.get(granularita, GRAN_MAP["mensile"])
-    cols = "data_doc,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,alfa_documento,accred_albo"
+    try:
+        ap = anno - 1
+        periodi = GRAN_MAP.get(granularita, GRAN_MAP["mensile"])
+        cols = "data_doc,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,alfa_documento,accred_albo"
 
-    df_c = get_saving_df(anno, str_ric, cdc, cols=cols)
-    df_p = get_saving_df(ap, str_ric, cdc, cols=cols)
+        df_c = get_saving_df(anno, str_ric, cdc, cols=cols)
+        df_p = get_saving_df(ap, str_ric, cdc, cols=cols)
 
-    if not df_c.empty: df_c["mn"] = df_c["data_doc"].dt.month
-    if not df_p.empty: df_p["mn"] = df_p["data_doc"].dt.month
+        if not df_c.empty: df_c["mn"] = df_c["data_doc"].dt.month
+        if not df_p.empty: df_p["mn"] = df_p["data_doc"].dt.month
 
-    mese_max   = int(df_c["mn"].max()) if not df_c.empty else 0
-    ult_giorno = int(df_c[df_c["mn"] == mese_max]["data_doc"].dt.day.max()) if mese_max else 0
+        mese_max   = int(df_c["mn"].max()) if not df_c.empty else 0
+        ult_giorno = int(df_c[df_c["mn"] == mese_max]["data_doc"].dt.day.max()) if mese_max else 0
 
-    def delta(c, p): return round((c - p) / abs(p) * 100, 1) if p else None
+        def delta(c, p): return round((c - p) / abs(p) * 100, 1) if p else None
 
-    chart = []
-    for m1, m2, lbl in periodi:
-        gc_df = df_c[(df_c["mn"] >= m1) & (df_c["mn"] <= m2)] if not df_c.empty else pd.DataFrame()
-        gp_df = df_p[(df_p["mn"] >= m1) & (df_p["mn"] <= m2)] if not df_p.empty else pd.DataFrame()
-        if len(gc_df) == 0 and len(gp_df) == 0: continue
+        chart = []
+        for m1, m2, lbl in periodi:
+            gc_df = df_c[(df_c["mn"] >= m1) & (df_c["mn"] <= m2)] if not df_c.empty else pd.DataFrame()
+            gp_df = df_p[(df_p["mn"] >= m1) & (df_p["mn"] <= m2)] if not df_p.empty else pd.DataFrame()
+            if len(gc_df) == 0 and len(gp_df) == 0: continue
 
-        parziale = len(gc_df) > 0 and mese_max < m2
-        if   granularita == "mensile":    label = MESI.get(m1, lbl)
-        elif granularita == "bimestrale": label = f"{MESI[m1]}–{MESI[m2]}"
-        elif granularita == "quarter":    label = lbl
-        elif granularita == "semestrale": label = f"{lbl} ({MESI[m1]}–{MESI[m2]})"
-        else:                             label = str(anno)
+            parziale = len(gc_df) > 0 and mese_max < m2
+            if   granularita == "mensile":    label = MESI.get(m1, lbl)
+            elif granularita == "bimestrale": label = f"{MESI[m1]}–{MESI[m2]}"
+            elif granularita == "quarter":    label = lbl
+            elif granularita == "semestrale": label = f"{lbl} ({MESI[m1]}–{MESI[m2]})"
+            else:                             label = str(anno)
 
-        kc, kp = calc_kpi(gc_df), calc_kpi(gp_df)
-        chart.append({
-            "label": label, "m_start": m1, "m_end": m2, "parziale": parziale,
-            "ha_dati_curr": len(gc_df) > 0, "ha_dati_prev": len(gp_df) > 0,
-            f"listino_{anno}":     kc["listino"],
-            f"impegnato_{anno}":   kc["impegnato"],
-            f"saving_{anno}":      kc["saving"],
-            f"perc_saving_{anno}": kc["perc_saving"],
-            f"n_neg_{anno}":       kc["n_negoziati"],
-            f"listino_{ap}":       kp["listino"],
-            f"impegnato_{ap}":     kp["impegnato"],
-            f"saving_{ap}":        kp["saving"],
-            f"perc_saving_{ap}":   kp["perc_saving"],
-            f"n_neg_{ap}":         kp["n_negoziati"],
-            "delta_saving":       delta(kc["saving"], kp["saving"])    if not parziale else None,
-            "delta_impegnato":    delta(kc["impegnato"], kp["impegnato"]) if not parziale else None,
-            "delta_perc_saving":  round(kc["perc_saving"] - kp["perc_saving"], 2)
-                                  if kp["perc_saving"] and not parziale else None,
-        })
+            kc, kp = calc_kpi(gc_df), calc_kpi(gp_df)
+            chart.append({
+                "label": label, "m_start": m1, "m_end": m2, "parziale": parziale,
+                "ha_dati_curr": len(gc_df) > 0, "ha_dati_prev": len(gp_df) > 0,
+                f"listino_{anno}":     kc["listino"],
+                f"impegnato_{anno}":   kc["impegnato"],
+                f"saving_{anno}":      kc["saving"],
+                f"perc_saving_{anno}": kc["perc_saving"],
+                f"n_neg_{anno}":       kc["n_negoziati"],
+                f"listino_{ap}":       kp["listino"],
+                f"impegnato_{ap}":     kp["impegnato"],
+                f"saving_{ap}":        kp["saving"],
+                f"perc_saving_{ap}":   kp["perc_saving"],
+                f"n_neg_{ap}":         kp["n_negoziati"],
+                "delta_saving":       delta(kc["saving"], kp["saving"])    if not parziale else None,
+                "delta_impegnato":    delta(kc["impegnato"], kp["impegnato"]) if not parziale else None,
+                "delta_perc_saving":  round(kc["perc_saving"] - kp["perc_saving"], 2)
+                                      if kp["perc_saving"] and not parziale else None,
+            })
 
-    mesi_interi = set()
-    for r in chart:
-        if not r["parziale"] and r["ha_dati_curr"] and r["ha_dati_prev"]:
-            for m in range(r["m_start"], r["m_end"] + 1):
-                mesi_interi.add(m)
+        mesi_interi = set()
+        for r in chart:
+            if not r["parziale"] and r["ha_dati_curr"] and r["ha_dati_prev"]:
+                for m in range(r["m_start"], r["m_end"] + 1):
+                    mesi_interi.add(m)
 
-    kc_hl = calc_kpi(df_c[df_c["mn"].isin(mesi_interi)] if not df_c.empty and mesi_interi else df_c)
-    kp_hl = calc_kpi(df_p[df_p["mn"].isin(mesi_interi)] if not df_p.empty and mesi_interi else df_p)
-    mc = max(mesi_interi) if mesi_interi else mese_max
+        kc_hl = calc_kpi(df_c[df_c["mn"].isin(mesi_interi)] if not df_c.empty and mesi_interi else df_c)
+        kp_hl = calc_kpi(df_p[df_p["mn"].isin(mesi_interi)] if not df_p.empty and mesi_interi else df_p)
+        mc = max(mesi_interi) if mesi_interi else mese_max
 
-    nota = ""
-    if mese_max and mese_max < 12:
-        nota = f"Dati {anno} disponibili fino al {df_c['data_doc'].max().date() if not df_c.empty else '—'}."
-        if ult_giorno < 20 and mese_max > 1:
-            nota += f" {MESI.get(mese_max, '')} è parziale ed è escluso dal confronto."
+        nota = ""
+        if mese_max and mese_max < 12:
+            nota = f"Dati {anno} disponibili fino al {df_c['data_doc'].max().date() if not df_c.empty else '—'}."
+            if ult_giorno < 20 and mese_max > 1:
+                nota += f" {MESI.get(mese_max, '')} è parziale ed è escluso dal confronto."
 
-    return {
-        "anno": anno, "anno_precedente": ap, "granularita": granularita,
-        "chart_data": chart,
-        "kpi_headline": {
-            "corrente": kc_hl, "precedente": kp_hl,
-            "label_curr": f"Gen–{MESI.get(mc, '?')} {anno}",
-            "label_prev": f"Gen–{MESI.get(mc, '?')} {ap}",
-            "delta": {
-                "listino":        delta(kc_hl["listino"],       kp_hl["listino"]),
-                "impegnato":      delta(kc_hl["impegnato"],     kp_hl["impegnato"]),
-                "saving":         delta(kc_hl["saving"],        kp_hl["saving"]),
-                "perc_saving":    round(kc_hl["perc_saving"] - kp_hl["perc_saving"], 2)
-                                  if kp_hl["perc_saving"] else None,
-                "perc_negoziati": round(kc_hl["perc_negoziati"] - kp_hl["perc_negoziati"], 2)
-                                  if kp_hl["perc_negoziati"] else None,
-            }
-        },
-        "nota": nota, "mese_max": mese_max, "ultimo_giorno": ult_giorno,
-    }
+        return {
+            "anno": anno, "anno_precedente": ap, "granularita": granularita,
+            "chart_data": chart,
+            "kpi_headline": {
+                "corrente": kc_hl, "precedente": kp_hl,
+                "label_curr": f"Gen–{MESI.get(mc, '?')} {anno}",
+                "label_prev": f"Gen–{MESI.get(mc, '?')} {ap}",
+                "delta": {
+                    "listino":        delta(kc_hl["listino"],       kp_hl["listino"]),
+                    "impegnato":      delta(kc_hl["impegnato"],     kp_hl["impegnato"]),
+                    "saving":         delta(kc_hl["saving"],        kp_hl["saving"]),
+                    "perc_saving":    round(kc_hl["perc_saving"] - kp_hl["perc_saving"], 2)
+                                      if kp_hl["perc_saving"] else None,
+                    "perc_negoziati": round(kc_hl["perc_negoziati"] - kp_hl["perc_negoziati"], 2)
+                                      if kp_hl["perc_negoziati"] else None,
+                }
+            },
+            "nota": nota, "mese_max": mese_max, "ultimo_giorno": ult_giorno,
+        }
+
+    except Exception as e:
+        log.error(f"kpi_yoy error anno={anno}: {e}", exc_info=True)
+        raise HTTPException(500, "Errore nel calcolo YoY. Verifica che i dati siano stati importati correttamente.")
 
 @app.get("/kpi/saving/yoy-cdc")
 def kpi_yoy_cdc(anno: int = Query(...)):
@@ -1009,7 +1019,22 @@ def export_excel(body: dict = Body(...)):
 
 @app.get("/upload/log")
 def upload_log():
-    return sb().table("upload_log").select("*").order("upload_date", desc=True).limit(50).execute().data
+    rows = sb().table("upload_log").select("*").order("upload_date", desc=True).limit(50).execute().data
+    if not isinstance(rows, list):
+        return []
+    # Garantisce che i campi JSONB siano sempre array (mai stringhe)
+    import json as _json
+    def _safe_list(v):
+        if isinstance(v, list): return v
+        if isinstance(v, str):
+            try: parsed = _json.loads(v); return parsed if isinstance(parsed, list) else []
+            except: return []
+        return []
+    for row in rows:
+        row["available_analyses"] = _safe_list(row.get("available_analyses"))
+        row["blocked_analyses"]   = _safe_list(row.get("blocked_analyses"))
+        row["warnings"]           = _safe_list(row.get("warnings"))
+    return rows
 
 @app.delete("/upload/{upload_id}")
 def delete_upload(upload_id: str):
