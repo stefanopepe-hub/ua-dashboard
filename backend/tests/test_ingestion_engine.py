@@ -422,3 +422,89 @@ def test_variant_column_names(col_name, expected_canon):
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+# ══════════════════════════════════════════════════════════════════
+# NUOVI TEST v10 — synonym gaps risolti
+# ══════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("col_name,expected_canon", [
+    # Impegnato — varianti inglesi pre-elaborate da utenti
+    ('committed_eur',     'impegnato_eur'),
+    ('committed eur',     'impegnato_eur'),
+    ('total committed',   'impegnato_eur'),
+    ('negotiated amount', 'impegnato_eur'),
+    ('net amount eur',    'impegnato_eur'),
+    # Listino — varianti inglesi
+    ('list price',        'listino_eur'),
+    ('catalog price',     'listino_eur'),
+    ('list price eur',    'listino_eur'),
+    ('initial price',     'listino_eur'),
+    # Buyer/utente
+    ('responsible',       'utente_pres'),
+    ('account manager',   'utente_pres'),
+    ('buyer name',        'utente_pres'),
+    # Protocollo
+    ('protocol order',    'protoc_ordine'),
+    ('protocol_order',    'protoc_ordine'),
+])
+def test_new_synonym_variants(col_name, expected_canon):
+    """Varianti colonne che utenti pre-elaboratori usano frequentemente."""
+    s = pd.Series([])
+    fm = map_single_column(col_name, s)
+    assert fm is not None, f"'{col_name}' should be mapped (got None)"
+    assert fm.canonical == expected_canon, \
+        f"'{col_name}' → '{fm.canonical}' instead of '{expected_canon}'"
+
+
+def test_resource_file_recognition(risorse_df):
+    """File risorse deve essere riconosciuto anche senza exact field names."""
+    col_map = build_column_map(risorse_df)
+    family, conf, scores = classify_file_family(col_map, 'Risorse Team')
+    assert family == FileFamily.RISORSE, f"Expected RISORSE, got {family}"
+    assert conf >= 0.50
+
+
+def test_saving_variant_english_columns():
+    """File saving con colonne inglesi pre-elaborate deve essere mappato."""
+    df_en = pd.DataFrame({
+        'supplier_name':   ['MERCK', 'LIFE TECH', 'EUROCLONE'],
+        'order_date':      pd.to_datetime(['2025-01-15', '2025-02-20', '2025-03-10']),
+        'list_price_eur':  [10000.0, 5000.0, 8000.0],
+        'committed_eur':   [9000.0, 4500.0, 7200.0],
+        'savings':         [1000.0, 500.0, 800.0],
+        'business_unit':   ['RICERCA', 'STRUTTURA', 'RICERCA'],
+        'doc_type':        ['ORD', 'OS', 'ORN'],
+        'negotiated':      ['SI', 'NO', 'SI'],
+        'macro_category':  ['Ricerca', 'Raccolta Fondi', 'Ricerca'],
+        'buyer name':      ['Marina P.', 'Silvana R.', 'Monti L.'],
+        'currency':        ['EURO', 'USD', 'EURO'],
+    })
+    col_map = build_column_map(df_en)
+    assert 'ragione_sociale' in col_map, "supplier_name deve essere mappato"
+    assert 'data_doc'        in col_map, "order_date deve essere mappato"
+    assert 'listino_eur'     in col_map, "list_price_eur deve essere mappato"
+    assert 'impegnato_eur'   in col_map, "committed_eur deve essere mappato"
+    assert 'utente_pres'     in col_map, "buyer name deve essere mappato"
+
+
+def test_multi_year_file():
+    """File con anno 2026 deve essere riconosciuto correttamente."""
+    df_2026 = pd.DataFrame({
+        'Data doc.':               pd.to_datetime(['2026-01-10', '2026-03-15', '2026-06-20']),
+        'Imp. Iniziale €':         [5000.0, 3000.0, 8000.0],
+        'Imp. Negoziato €':        [4500.0, 2700.0, 7200.0],
+        'Saving.1':                [500.0, 300.0, 800.0],
+        'Ragione sociale fornitore': ['MERCK', 'LIFE TECH', 'EUROCLONE'],
+        'Alfa documento':          ['ORD', 'OS', 'ORN'],
+        'CDC':                     ['TIGEM', 'GD', 'FT'],
+        'Str./Ric.':               ['RICERCA', 'STRUTTURA', 'RICERCA'],
+    })
+    col_map = build_column_map(df_2026)
+    assert 'data_doc'     in col_map
+    assert 'listino_eur'  in col_map
+    assert 'impegnato_eur' in col_map
+    family, conf, _ = classify_file_family(col_map, 'saving 2026')
+    assert family == FileFamily.SAVINGS
+    assert conf >= 0.80
+
