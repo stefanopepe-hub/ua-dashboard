@@ -78,7 +78,15 @@ function SmartUploadCard({ tipo, label, color, desc, onSuccess }) {
       onSuccess?.()
     } catch (e) {
       setStatus('error')
-      setMsg(e.message)
+      // Mostra il messaggio dell'errore (già tradotto in business-friendly dal backend)
+      // Mai mostrare errori tecnici crudi all'utente
+      const raw = e.message || ''
+      if (raw.includes('code') && raw.includes('23') || raw.includes('Failing row')) {
+        // Intercetta errori DB residui non ancora tradotti
+        setMsg('Errore di compatibilità durante il salvataggio. Usa il caricamento automatico o controlla il tipo di file.')
+      } else {
+        setMsg(raw.length > 0 ? raw : 'Errore imprevisto durante il caricamento.')
+      }
     }
   }
 
