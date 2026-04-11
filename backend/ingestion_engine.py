@@ -301,8 +301,10 @@ SYNONYMS: Dict[str, List[str]] = {
 
     # ── Risorse ──────────────────────────────────────────────────
     'risorsa': [
-        'risorsa', 'resource', 'buyer', 'utente', 'nome risorsa',
-        'risorsa_nome', 'employee', 'operatore', 'responsabile',
+        'risorsa', 'resource', 'nome risorsa', 'risorsa_nome',
+        'employee', 'operatore', 'nome operatore',
+        # NB: 'buyer' e 'utente' sono in utente_pres per evitare ambiguità
+        # In contesto risorse, l'L5 (value inference) disambigua dai valori
     ],
     'pratiche_gestite': [
         'pratiche gestite', 'pratiche', 'cases handled', 'documents managed',
@@ -324,10 +326,18 @@ SYNONYMS: Dict[str, List[str]] = {
     'negoziazioni_concluse': [
         'negoziazioni concluse', 'negoziazioni', 'negotiations completed',
         'negoziazioni_concluse', 'negotiated cases',
+        # Varianti inglesi brevi
+        'negotiations', 'deals closed', 'deals done',
+        'trattative concluse', 'trattative', 'neg. concluse',
+        'n. negoziazioni', 'num. negoziazioni',
     ],
     'tempo_medio_risorsa': [
         'tempo medio', 'avg cycle time', 'tempo_medio', 'average time',
         'media giorni', 'avg_days', 'giorni medi',
+        # Varianti brevi inglesi
+        'avg days', 'average days', 'avg time', 'mean days',
+        'throughput', 'cycle time', 'elapsed days', 'gg medi',
+        'tempo medio giorni', 'tempo medio (gg)', 'days avg',
     ],
     'efficienza': [
         'efficienza', 'efficiency', 'performance score', 'kpi score',
@@ -380,6 +390,14 @@ for _canon, _syns in SYNONYMS.items():
 
 REGEX_RULES: List[Tuple[re.Pattern, str, int]] = [
     # (pattern, canonical_field, base_confidence)
+
+    # Tempo medio risorsa — varianti brevi
+    (re.compile(r'avg[\s._]*days',                        re.I), 'tempo_medio_risorsa', 88),
+    (re.compile(r'average[\s._]*days',                    re.I), 'tempo_medio_risorsa', 88),
+    (re.compile(r'mean[\s._]*days',                       re.I), 'tempo_medio_risorsa', 86),
+    (re.compile(r'cycle[\s._]*time',                      re.I), 'tempo_medio_risorsa', 84),
+    # Negoziazioni concluse — varianti brevi
+    (re.compile(r'^negotiation',                          re.I), 'negoziazioni_concluse', 82),
 
     # Committed / impegnato varianti inglesi
     (re.compile(r'commit+ed[\s._]*(?:eur|€|amount)?', re.I), 'impegnato_eur', 88),

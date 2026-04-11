@@ -26,6 +26,10 @@ from supabase import create_client
 from dotenv import load_dotenv
 
 # ── Import moduli interni ─────────────────────────────────────────
+from upload_engine import (
+    process_upload, inspect_bytes, inspect_and_load,
+    compute_readiness, UploadResult, WorkbookInspection,
+)
 from ingestion_engine import (
     inspect_workbook, mapping_result_to_dict, FileFamily,
     build_column_map, FieldMapping,
@@ -213,300 +217,175 @@ def build_saving_record(
 # UPLOAD — SAVING  (pipeline unificata, usa ingestion_engine)
 # ─────────────────────────────────────────────────────────────────
 
-@app.post("/upload/saving")
-async def upload_saving(file: UploadFile = File(...), cdc_override: Optional[str] = None):
+
+@app.post("/upload/auto")
+async def upload_auto(
+    file: UploadFile = File(...),
+    cdc_override: Optional[str] = None,
+    yoy_mode: bool = False,
+    forced_family: Optional[str] = None,
+):
     """
-    Pipeline unificata: ingestion_engine → canonical → DB.
-    Stesso mapping usato da /upload/inspect e da tutte le analytics.
+    Endpoint upload unificato — classifica e importa automaticamente.
+    Supporta: savings, risorse, non_conformita, tempi.
+    
+    Parametri:
+        cdc_override:   forza il CDC (solo per file saving)
+        yoy_mode:       True = importa tutti gli anni (per YoY)
+        forced_family:  override famiglia (es. 'risorse', 'savings')
     """
     contents = await file.read()
     try:
-        xl = pd.ExcelFile(io.BytesIO(contents))
+        result = process_upload(
+            file_bytes=contents,
+            filename=file.filename,
+            client=sb(),
+            cdc_override=cdc_override,
+            yoy_mode=yoy_mode,
+            forced_family=forced_family,
+        )
     except Exception as e:
-        raise HTTPException(400, f"Errore apertura file: {e}")
+        log.error(f"upload_auto unexpected error: {e}", exc_info=True)
+        raise HTTPException(500, f"Errore imprevisto: {str(e)[:300]}")
+    
+    if result.status == "failed" and not result.upload_id:
+        raise HTTPException(400, result.error or "Upload fallito")
+    
+    return result.to_dict()
 
-    # ── Step 1: ispeziona con ingestion_engine (STESSO motore del preview) ──
-    mr = inspect_workbook(xl)
-
-    # ── Step 2: valida ──
-    if mr.overall_score < 0.30:
-        raise HTTPException(400,
-            f"File non riconoscibile (confidence {mr.overall_score:.0%}). "
-            f"Tipo rilevato: {mr.family.value}. "
-            f"Campi mancanti: {mr.missing_critical}. "
-            f"Scarica il template standard per un formato garantito.")
-
-    if mr.family not in (FileFamily.SAVINGS, FileFamily.ORDERS_DETAIL):
-        raise HTTPException(400,
-            f"Tipo file rilevato: '{mr.family.value}' — questo endpoint è per file Saving/Ordini. "
-            f"Usa /upload/risorse per file risorse, /upload/nc per non conformità.")
-
-    # ── Step 3: rileggi il foglio con header corretto ──
-    df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=mr.header_row)
-    df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
-    df.columns = [str(c).strip() for c in df.columns]
-
-    # ── Step 4: usa il col_map dell'engine (stesso del preview) ──
-    col_map = mr.fields  # Dict[canonical → FieldMapping]
-
-    # ── Step 5: filtro anno (auto-detect anno dominante) ──
-    date_fm = col_map.get('data_doc')
-    if date_fm:
-        date_col = date_fm.source_column
-        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-        df = df.dropna(subset=[date_col])
-        yr = df[date_col].dt.year.value_counts()
-        if len(yr) > 1 and yr.iloc[0] / len(df) >= 0.95:
-            anno_dom = int(yr.index[0])
-            df = df[df[date_col].dt.year == anno_dom]
-            log.info(f"Auto-filtro anno {anno_dom}: {len(df)} righe")
-
-    # ── Step 6: crea upload_log entry ──
-    preview_dict = mapping_result_to_dict(mr)
-    client = sb()
-    lr = client.table("upload_log").insert({
-        "filename":           file.filename,
-        "tipo":               "saving",
-        "cdc_filter":         cdc_override,
-        "family_detected":    mr.family.value,
-        "mapping_confidence": mr.overall_confidence.value,
-        "mapping_score":      mr.overall_score,
-        "sheet_used":         mr.sheet_name,
-        "header_row":         mr.header_row,
-        "available_analyses": preview_dict.get('available_analyses', []),
-        "blocked_analyses":   preview_dict.get('blocked_analyses', []),
-        "warnings":           preview_dict.get('warnings', []),
-    }).execute()
-    upload_id = lr.data[0]["id"]
-
-    # ── Step 7: costruisci records canonical ──
-    records = []
-    skipped = 0
-    for _, row in df.iterrows():
-        rec = build_saving_record(col_map, row, upload_id, cdc_override)
-        if rec:
-            records.append(rec)
-        else:
-            skipped += 1
-
-    # ── Step 8: insert in batch ──
-    inserted = 0
-    BATCH = 5000
-    for i in range(0, len(records), BATCH):
-        batch = records[i:i + BATCH]
-        try:
-            client.table("saving").insert(batch).execute()
-            inserted += len(batch)
-            log.info(f"Batch {i//BATCH+1}: {inserted}/{len(records)}")
-        except Exception as e:
-            log.error(f"Insert error batch {i}: {str(e)[:400]}")
-            if i == 0:
-                client.table("upload_log").delete().eq("id", upload_id).execute()
-                raise HTTPException(500, f"Errore DB: {str(e)[:400]}")
-
-    client.table("upload_log").update({"rows_inserted": inserted}).eq("id", upload_id).execute()
-    log.info(f"Upload OK: {inserted} righe, {skipped} saltate")
-
+@app.post("/upload/saving")
+async def upload_saving_compat(
+    file: UploadFile = File(...),
+    cdc_override: Optional[str] = None,
+    yoy_mode: bool = False,
+):
+    """
+    Endpoint saving — usa /upload/auto internamente.
+    Mantenuto per compatibilità con frontend esistente.
+    """
+    contents = await file.read()
+    try:
+        result = process_upload(
+            file_bytes=contents,
+            filename=file.filename,
+            client=sb(),
+            cdc_override=cdc_override,
+            yoy_mode=yoy_mode,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Errore: {str(e)[:300]}")
+    
+    if result.status == "failed" and not result.upload_id:
+        raise HTTPException(400, result.error or "Upload fallito")
+    
     return {
-        "status": "ok",
-        "rows_inserted": inserted,
-        "rows_skipped": skipped,
-        "upload_id": upload_id,
-        "sheet_used": mr.sheet_name,
-        "family": mr.family.value,
-        "mapping_confidence": mr.overall_confidence.value,
-        "mapping_score": mr.overall_score,
-        "available_analyses": mr.available_analyses,
-        "blocked_analyses": mr.blocked_analyses,
-        "warnings": mr.warnings,
+        "status": result.status,
+        "rows_inserted": result.rows_inserted,
+        "rows_skipped": result.rows_skipped,
+        "upload_id": result.upload_id,
+        "sheet_used": result.sheet_used,
+        "family": result.family,
+        "mapping_confidence": result.mapping_confidence,
+        "mapping_score": result.mapping_score,
+        "available_analyses": result.available_analyses,
+        "blocked_analyses": result.blocked_analyses,
+        "warnings": result.warnings,
+        "year_detected": result.year_detected,
+        "years_found": result.years_found,
+        "yoy_ready": result.yoy_ready,
     }
 
 
 @app.post("/upload/inspect")
 async def upload_inspect(file: UploadFile = File(...)):
-    """Preview intelligente senza importare. Stesso engine del vero import."""
+    """
+    Preview intelligente — stesso engine del vero import.
+    Ritorna: family, confidence, mapped fields, analisi disponibili/bloccate, YoY info.
+    """
     contents = await file.read()
     try:
-        xl = pd.ExcelFile(io.BytesIO(contents))
-        mr = inspect_workbook(xl)
-        return mapping_result_to_dict(mr)
+        mr = inspect_bytes(contents, file.filename)
+        result = mapping_result_to_dict(mr)
+        wbi = inspect_and_load(contents, file.filename)
+        readiness = compute_readiness(mr, wbi)
+        result.update({
+            "year_detected":        readiness["year_detected"],
+            "years_found":          readiness["years_found"],
+            "yoy_ready":            readiness["yoy_ready"],
+            "yoy_note":             readiness["yoy_note"],
+            "normalization_notes":  readiness["normalization_notes"],
+            "family_label":         readiness["family_label"],
+        })
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
+        log.error(f"inspect error: {e}", exc_info=True)
         raise HTTPException(400, f"Errore ispezione: {str(e)[:300]}")
 
 
 @app.post("/upload/risorse")
-async def upload_risorse(file: UploadFile = File(...)):
-    """Upload file analytics risorse / team."""
+async def upload_risorse_compat(file: UploadFile = File(...)):
+    """Endpoint risorse — usa /upload/auto internamente."""
     contents = await file.read()
     try:
-        xl = pd.ExcelFile(io.BytesIO(contents))
+        result = process_upload(
+            file_bytes=contents,
+            filename=file.filename,
+            client=sb(),
+        )
     except Exception as e:
-        raise HTTPException(400, f"Errore apertura file: {e}")
-
-    mr = inspect_workbook(xl)
-    # Accetta anche se classificato come altro, se ha almeno il campo 'risorsa'
-    has_risorsa = 'risorsa' in mr.fields or 'pratiche_gestite' in mr.fields
-    if not has_risorsa and mr.family != FileFamily.RISORSE:
-        fam_scores = mr.family_candidate_scores
-        raise HTTPException(400,
-            f"File non riconoscibile come file risorse. "
-            f"Tipo rilevato: '{mr.family.value}' (confidence {mr.family_confidence:.0%}). "
-            f"Score risorse: {fam_scores.get('risorse', 0):.0%}. "
-            f"Il file deve contenere colonne: Risorsa, Mese, Pratiche Gestite. "
-            f"Colonne trovate: {mr.raw_columns[:10]}")
-
-    df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=mr.header_row)
-    df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
-    df.columns = [str(c).strip() for c in df.columns]
-    col_map = mr.fields
-
-    def gcol(canonical: str, row):
-        """Safe gcol con row esplicita — no closure bug."""
-        fm = col_map.get(canonical)
-        if not fm: return None
-        return row.get(fm.source_column)
-
-    client = sb()
-    lr = client.table("upload_log").insert({
-        "filename": file.filename, "tipo": "risorse",
-        "family_detected": mr.family.value,
-        "mapping_confidence": mr.overall_confidence.value,
-        "sheet_used": mr.sheet_name,
-    }).execute()
-    uid = lr.data[0]["id"]
-
-    records = []
-    for _, row in df.iterrows():
-        mese_raw = _s(gcol('year_month', row)) or ''
-        year = month = quarter = None
-        try:
-            parts = mese_raw.split('-')
-            if len(parts) == 2:
-                year, month = int(parts[0]), int(parts[1])
-                quarter = (month - 1) // 3 + 1
-        except Exception:
-            pass
-
-        records.append({
-            "upload_id":             uid,
-            "year":                  year,
-            "month":                 month,
-            "quarter":               quarter,
-            "mese_label":            mese_raw,
-            "risorsa":               _s(gcol('risorsa', row)) or 'N/D',
-            "struttura":             _s(gcol('str_ric', row)),
-            "pratiche_gestite":      _i(gcol('pratiche_gestite', row)),
-            "pratiche_aperte":       _i(gcol('pratiche_aperte', row)),
-            "pratiche_chiuse":       _i(gcol('pratiche_chiuse', row)),
-            "saving_generato":       _fn(gcol('saving_generato', row)),
-            "negoziazioni_concluse": _i(gcol('negoziazioni_concluse', row)),
-            "tempo_medio_giorni":    _fn(gcol('tempo_medio_risorsa', row)),
-            "efficienza":            _fn(gcol('efficienza', row)),
-        })
-
-    records_clean = [{k: clean(v) for k, v in r.items()} for r in records]
-    for i in range(0, len(records_clean), 500):
-        client.table("resource_performance").insert(records_clean[i:i+500]).execute()
-    client.table("upload_log").update({"rows_inserted": len(records_clean)}).eq("id", uid).execute()
-
-    return {"status": "ok", "rows": len(records_clean), "family": mr.family.value}
+        raise HTTPException(500, f"Errore: {str(e)[:300]}")
+    
+    if result.status == "failed" and not result.upload_id:
+        # Prova con forced_family='risorse' se classificato male
+        if result.mapping_score >= 0.40:
+            result = process_upload(
+                file_bytes=contents,
+                filename=file.filename,
+                client=sb(),
+                forced_family='risorse',
+            )
+        if result.status == "failed":
+            raise HTTPException(400, result.error or "File risorse non riconoscibile")
+    
+    return {
+        "status": result.status,
+        "rows": result.rows_inserted,
+        "family": result.family,
+        "year_detected": result.year_detected,
+        "available_analyses": result.available_analyses,
+        "warnings": result.warnings,
+    }
 
 
 @app.post("/upload/tempi")
-async def upload_tempi(file: UploadFile = File(...)):
+async def upload_tempi_compat(file: UploadFile = File(...)):
+    """Endpoint tempi attraversamento — usa upload_engine."""
     contents = await file.read()
     try:
-        xl = pd.ExcelFile(io.BytesIO(contents))
-        mr = inspect_workbook(xl)
-        df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=mr.header_row)
-        df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
-        df.columns = [str(c).strip() for c in df.columns]
+        result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
     except Exception as e:
-        raise HTTPException(400, str(e))
-
-    col_map = mr.fields
-    def gcol(canonical):
-        fm = col_map.get(canonical)
-        return row.get(fm.source_column) if fm else None
-
-    client = sb()
-    lr = client.table("upload_log").insert({
-        "filename": file.filename, "tipo": "tempi",
-        "family_detected": mr.family.value,
-    }).execute()
-    uid = lr.data[0]["id"]
-
-    recs = []
-    for _, row in df.iterrows():
-        recs.append({
-            "upload_id":        uid,
-            "protocol":         _s(gcol('protoc_commessa')),
-            "year_month":       _s(gcol('year_month')),
-            "days_purchasing":  _f(gcol('days_purchasing')),
-            "days_auto":        _f(gcol('days_auto')),
-            "days_other":       _f(gcol('days_other')),
-            "total_days":       _f(gcol('total_days')),
-            "bottleneck":       _s(gcol('bottleneck')),
-        })
-
-    for i in range(0, len(recs), 500):
-        client.table("tempo_attraversamento").insert(
-            [{k: clean(v) for k, v in r.items()} for r in recs[i:i+500]]
-        ).execute()
-    client.table("upload_log").update({"rows_inserted": len(recs)}).eq("id", uid).execute()
-    return {"status": "ok", "rows": len(recs)}
+        raise HTTPException(500, f"Errore: {str(e)[:300]}")
+    if result.status == "failed" and not result.upload_id:
+        raise HTTPException(400, result.error or "File tempi non riconoscibile")
+    return {"status": result.status, "rows": result.rows_inserted,
+            "family": result.family, "warnings": result.warnings}
 
 
 @app.post("/upload/nc")
-async def upload_nc(file: UploadFile = File(...)):
+async def upload_nc_compat(file: UploadFile = File(...)):
+    """Endpoint non conformità — usa upload_engine."""
     contents = await file.read()
     try:
-        xl = pd.ExcelFile(io.BytesIO(contents))
-        mr = inspect_workbook(xl)
-        df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=mr.header_row)
-        df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
-        df.columns = [str(c).strip() for c in df.columns]
+        result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
     except Exception as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(500, f"Errore: {str(e)[:300]}")
+    if result.status == "failed" and not result.upload_id:
+        raise HTTPException(400, result.error or "File NC non riconoscibile")
+    return {"status": result.status, "rows": result.rows_inserted,
+            "family": result.family, "warnings": result.warnings}
 
-    col_map = mr.fields
-    def gcol(canonical):
-        fm = col_map.get(canonical)
-        return row.get(fm.source_column) if fm else None
-
-    client = sb()
-    lr = client.table("upload_log").insert({
-        "filename": file.filename, "tipo": "nc",
-        "family_detected": mr.family.value,
-    }).execute()
-    uid = lr.data[0]["id"]
-
-    recs = []
-    for _, row in df.iterrows():
-        recs.append({
-            "upload_id":             uid,
-            "ragione_sociale":       _s(gcol('ragione_sociale')),
-            "tipo_origine":          _s(gcol('tipo_origine')),
-            "data_origine":          _d(gcol('data_origine')) or _d(gcol('data_doc')),
-            "utente_origine":        _s(gcol('utente')),
-            "delta_giorni":          _fn(gcol('delta_giorni')),
-            "non_conformita":        _b(gcol('non_conformita')),
-        })
-
-    for i in range(0, len(recs), 500):
-        client.table("non_conformita").insert(
-            [{k: clean(v) for k, v in r.items()} for r in recs[i:i+500]]
-        ).execute()
-    client.table("upload_log").update({"rows_inserted": len(recs)}).eq("id", uid).execute()
-    return {"status": "ok", "rows": len(recs)}
-
-
-# ─────────────────────────────────────────────────────────────────
-# KPI SAVING — tutte le analytics usano campi DB canonici
-# ─────────────────────────────────────────────────────────────────
-
-MESI = {1:"Gen",2:"Feb",3:"Mar",4:"Apr",5:"Mag",6:"Giu",
-        7:"Lug",8:"Ago",9:"Set",10:"Ott",11:"Nov",12:"Dic"}
 
 @app.get("/kpi/saving/anni")
 def get_anni():
