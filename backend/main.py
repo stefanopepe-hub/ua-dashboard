@@ -218,6 +218,81 @@ def build_saving_record(
 # ─────────────────────────────────────────────────────────────────
 
 
+
+@app.post("/upload/inspect")
+async def upload_inspect(file: UploadFile = File(...)):
+    """
+    Preview intelligente — stesso engine del vero import.
+    Ritorna: family, confidence, mapped fields, analisi disponibili/bloccate, YoY info.
+    Non importa nulla, solo analizza.
+    """
+    contents = await file.read()
+    try:
+        mr = inspect_bytes(contents, file.filename)
+        result = mapping_result_to_dict(mr)
+        wbi = inspect_and_load(contents, file.filename)
+        readiness = compute_readiness(mr, wbi)
+        result.update({
+            "year_detected":       readiness["year_detected"],
+            "years_found":         readiness["years_found"],
+            "yoy_ready":           readiness["yoy_ready"],
+            "yoy_note":            readiness["yoy_note"],
+            "normalization_notes": readiness["normalization_notes"],
+            "family_label":        readiness["family_label"],
+        })
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.error(f"inspect error for {file.filename}: {e}", exc_info=True)
+        raise HTTPException(400, f"Errore ispezione file: {str(e)[:200]}")
+
+
+@app.post("/upload/saving")
+async def upload_saving(
+    file: UploadFile = File(...),
+    cdc_override: Optional[str] = None,
+    yoy_mode: bool = False,
+):
+    """
+    Upload file saving/ordini.
+    Usa lo stesso engine di /upload/auto ma con compatibilità frontend.
+    """
+    contents = await file.read()
+    try:
+        result = process_upload(
+            file_bytes=contents,
+            filename=file.filename,
+            client=sb(),
+            cdc_override=cdc_override,
+            yoy_mode=yoy_mode,
+        )
+    except Exception as e:
+        log.error(f"upload_saving error for {file.filename}: {e}", exc_info=True)
+        raise HTTPException(500, "Errore durante l'elaborazione del file.")
+
+    if result.status == "failed" and not result.upload_id:
+        raise HTTPException(400, result.error or "File non riconoscibile come file saving/ordini.")
+
+    return {
+        "status":             result.status,
+        "rows_inserted":      result.rows_inserted,
+        "rows_skipped":       result.rows_skipped,
+        "upload_id":          result.upload_id,
+        "sheet_used":         result.sheet_used,
+        "family":             result.family,
+        "family_label":       result.family_label,
+        "mapping_confidence": result.mapping_confidence,
+        "mapping_score":      result.mapping_score,
+        "year_detected":      result.year_detected,
+        "years_found":        result.years_found,
+        "yoy_ready":          result.yoy_ready,
+        "available_analyses": result.available_analyses,
+        "blocked_analyses":   result.blocked_analyses,
+        "warnings":           result.warnings,
+        "normalization_notes": result.normalization_notes,
+    }
+
 @app.post("/upload/auto")
 async def upload_auto(
     file: UploadFile = File(...),

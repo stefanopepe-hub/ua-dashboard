@@ -749,9 +749,12 @@ FAMILY_SIGNALS: Dict[FileFamily, Dict[str, float]] = {
     FileFamily.SAVINGS: {
         'alfa_documento':  3.0,  # OPR/ORN/OS → molto specifico
         'str_ric':         2.0,
-        'listino_eur':     2.5,
+        'listino_eur':     2.5,  # file con colonne EUR
         'impegnato_eur':   2.5,
         'saving_eur':      3.0,
+        'listino_val':     2.0,  # file senza colonne EUR (es. Alyante senza cambio)
+        'impegnato_val':   2.0,
+        'saving_val':      2.5,
         'negoziazione':    2.0,
         'accred_albo':     1.5,
         'cdc':             1.5,
@@ -886,9 +889,11 @@ def classify_file_family(
 ANALYSES_BY_FAMILY: Dict[FileFamily, Dict[str, List[str]]] = {
     FileFamily.SAVINGS: {
         'available': [
-            ('KPI Riepilogo', ['listino_eur','impegnato_eur','saving_eur']),
-            ('Saving YoY', ['data_doc','saving_eur']),
-            ('Per Tipo Documento', ['alfa_documento','listino_eur']),
+            # Accetta sia colonne EUR che colonne in valuta originale
+            ('KPI Riepilogo',       ['listino_eur', 'impegnato_eur']),    # listino_val è fallback in calc_kpi
+            ('KPI Riepilogo (val)', ['listino_val', 'impegnato_val']),    # per file senza colonne EUR
+            ('Saving YoY',         ['data_doc']),                        # qualsiasi data va bene
+            ('Per Tipo Documento',  ['alfa_documento']),                  # solo il tipo doc
         ],
         'optional': [
             ('Saving per CDC', ['cdc']),
