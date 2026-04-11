@@ -141,28 +141,44 @@ def inspect_bytes(file_bytes: bytes, filename: str = "") -> MappingResult:
 
 def inspect_and_load(file_bytes: bytes, filename: str = "") -> WorkbookInspection:
     """
-    Ispeziona il workbook e carica il DataFrame con header corretto.
+    Ispeziona il workbook e carica il DataFrame completo per la normalizzazione.
+    
+    Performance:
+    - inspect_workbook usa nrows=200 (veloce, per mapping)
+    - qui facciamo UN SOLO full read (per la normalizzazione)
+    - totale: 1 full read invece di 2-4
     """
     try:
         xl = pd.ExcelFile(io.BytesIO(file_bytes))
     except Exception as e:
         raise ValueError(f"Errore apertura file '{filename}': {e}")
 
+    # Step 1: ispeziona struttura e mappa colonne (veloce — usa sample)
     mr = inspect_workbook(xl)
 
-    # Carica df con header rilevato
+    # Step 2: UN SOLO full read per la normalizzazione
     try:
         df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=mr.header_row)
     except Exception as e:
-        # Fallback: prova con header=0
-        log.warning(f"Header row {mr.header_row} failed, trying 0: {e}")
-        df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=0)
+        log.warning(f"Header row {mr.header_row} failed for {filename}, trying 0: {e}")
+        try:
+            df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=0)
+        except Exception as e2:
+            raise ValueError(f"Impossibile leggere il foglio '{mr.sheet_name}': {e2}")
 
     # Pulizia colonne
     df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Rilevamento anni (per YoY)
+    # Aggiorna il mapping usando il df completo per valori più robusti
+    # (il mapping sul sample è identico ma vogliamo consistenza)
+    from ingestion_engine import build_column_map, classify_file_family
+    full_col_map = build_column_map(df)
+    # Usa il full map se ha più campi del sample map
+    if len(full_col_map) >= len(mr.fields):
+        mr.fields = full_col_map
+
+    # Rilevamento anni
     years_found, year_dominant = _detect_years(df, mr.fields)
 
     return WorkbookInspection(
