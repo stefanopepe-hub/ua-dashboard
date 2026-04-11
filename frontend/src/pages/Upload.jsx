@@ -80,12 +80,12 @@ function SmartUploadCard({ tipo, label, color, desc, onSuccess }) {
       setStatus('error')
       // Mostra il messaggio dell'errore (già tradotto in business-friendly dal backend)
       // Mai mostrare errori tecnici crudi all'utente
-      const raw = e.message || ''
-      if (raw.includes('code') && raw.includes('23') || raw.includes('Failing row')) {
-        // Intercetta errori DB residui non ancora tradotti
-        setMsg('Errore di compatibilità durante il salvataggio. Usa il caricamento automatico o controlla il tipo di file.')
+      // e può essere Error, stringa, o oggetto — normalizza sempre
+      const raw = typeof e === 'string' ? e : (e?.message || e?.detail || JSON.stringify(e) || '')
+      if (raw.includes('23514') || raw.includes('23505') || raw.includes('Failing row')) {
+        setMsg('Errore durante il salvataggio. Prova con il caricamento automatico.')
       } else {
-        setMsg(raw.length > 0 ? raw : 'Errore imprevisto durante il caricamento.')
+        setMsg(raw.length > 0 ? raw.slice(0, 200) : 'Errore imprevisto durante il caricamento.')
       }
     }
   }
@@ -144,7 +144,7 @@ function SmartUploadCard({ tipo, label, color, desc, onSuccess }) {
               </div>
 
               {/* Available analyses */}
-              {inspection.available_analyses?.length > 0 && (
+              {Array.isArray(inspection.available_analyses) && inspection.available_analyses.length > 0 && (
                 <div className="text-green-600 flex items-start gap-1">
                   <CheckCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
                   <span>Analisi disponibili: {inspection.available_analyses.slice(0, 3).join(', ')}{inspection.available_analyses.length > 3 ? ` +${inspection.available_analyses.length - 3}` : ''}</span>
@@ -160,10 +160,10 @@ function SmartUploadCard({ tipo, label, color, desc, onSuccess }) {
               ))}
 
               {/* Blocked */}
-              {inspection.blocked_analyses?.filter(b => b.severity === 'critical').length > 0 && (
+              {Array.isArray(inspection.blocked_analyses) && inspection.blocked_analyses.filter(b => b.severity === 'critical').length > 0 && (
                 <div className="text-red-600 flex items-start gap-1">
                   <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                  <span>{inspection.blocked_analyses.filter(b => b.severity === 'critical').length} analisi bloccate</span>
+                  <span>{(Array.isArray(inspection.blocked_analyses) ? inspection.blocked_analyses.filter(b => b.severity === 'critical').length : 0)} analisi bloccate</span>
                 </div>
               )}
 

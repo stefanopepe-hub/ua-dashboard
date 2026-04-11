@@ -118,7 +118,16 @@ export default function Saving() {
         <GranSelect value={gran} onChange={setGran} />
       </div>
 
-      {eYoy && <ErrorBox message={eYoy} />}
+      {eYoy && (
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 text-xs text-amber-700">
+          <span>⚠️</span>
+          <span>
+            {eYoy.includes('fetch') || eYoy.includes('network') || eYoy.includes('NetworkError')
+              ? 'Il server sta avviando. Attendi qualche secondo e ricarica la pagina.'
+              : `Errore nel caricamento YoY: ${eYoy.slice(0, 120)}`}
+          </span>
+        </div>
+      )}
       {yoy?.nota && (
         <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 text-xs text-amber-800">
           ℹ️ {yoy.nota} <strong>KPI: {hl.label_curr} vs {hl.label_prev}</strong>
