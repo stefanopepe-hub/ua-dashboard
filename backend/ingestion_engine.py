@@ -70,12 +70,24 @@ SYNONYMS: Dict[str, List[str]] = {
         'imp. iniziale e', 'importo iniziale eur', 'importo listino eur',
         'list amount eur', 'initial amount eur', 'listino eur',
         'prezzo listino eur', 'valore iniziale eur', 'imp_listino_eur',
+        # Varianti inglese
+        'list price eur', 'price list eur', 'catalog price eur',
+        'gross amount eur', 'original amount eur', 'budget amount eur',
+        'list amount', 'list price', 'price list', 'catalog price',
+        'gross amount', 'original amount', 'budget amount',
+        'initial price', 'base price', 'standard price',
     ],
     'impegnato_eur': [
         'imp. negoziato €', 'imp.negoziato €', 'imp negoziato €',
         'imp. negoziato e', 'importo negoziato eur', 'importo impegnato eur',
         'committed amount eur', 'negotiated amount eur', 'impegnato eur',
         'importo effettivo eur', 'imp_impegnato_eur', 'importo finale eur',
+        # Varianti inglese pre-elaborate da utenti
+        'committed eur', 'committed_eur', 'total committed eur',
+        'negotiated eur', 'net amount eur', 'actual amount eur',
+        'spend eur', 'total spend eur', 'purchase amount eur',
+        'committed amount', 'total committed', 'negotiated amount',
+        'actual spend', 'net spend', 'final amount',
     ],
     'saving_eur': [
         'saving.1', 'saving eur', 'saving €', 'saving1', 'risparmio eur',
@@ -167,13 +179,18 @@ SYNONYMS: Dict[str, List[str]] = {
 
     # ── Struttura / CDC ──────────────────────────────────────────
     'str_ric': [
-        'str./ric.', 'struttura/ricerca', 'struttura ricerca', 'business unit',
-        'str_ric', 'area', 'structure', 'divisione', 'business area',
-        'str./ric', 'struttura', 'ricerca',
+        'str./ric.', 'struttura/ricerca', 'struttura ricerca',
+        'str_ric', 'area', 'structure', 'divisione',
+        'str./ric', 'struttura e ricerca', 'ricerca struttura',
+        'str ric', 'struttura/ric.',
     ],
     'cdc': [
         'cdc', 'centro di costo abbreviato', 'cost center code', 'bu code',
         'business unit code', 'cod cdc',
+        # Varianti comuni
+        'business unit', 'bu', 'cost_center_code', 'cost center',
+        'organizational unit', 'org unit', 'profit center',
+        'division code', 'department code', 'entity',
     ],
     'centro_costo': [
         'centro di costo', 'centro costo', 'cost center', 'cost_center',
@@ -189,6 +206,12 @@ SYNONYMS: Dict[str, List[str]] = {
         'utente per presentazione', 'buyer', 'responsabile', 'purchaser',
         'utente_presentazione', 'buyer name', 'nome buyer', 'gestore',
         'utente_pres', 'presentation user',
+        # Varianti inglese / HR
+        'responsible', 'responsible person', 'account manager',
+        'procurement officer', 'purchasing officer', 'purchase owner',
+        'owner', 'assigned to', 'handler', 'case owner',
+        'buyer name', 'buyer_name', 'acquirente', 'referente acquisti',
+        'referente', 'referente ua', 'referente ufficio acquisti',
     ],
     'utente': [
         'utente', 'user', 'operatore', 'utente sistema', 'user name',
@@ -358,6 +381,15 @@ for _canon, _syns in SYNONYMS.items():
 REGEX_RULES: List[Tuple[re.Pattern, str, int]] = [
     # (pattern, canonical_field, base_confidence)
 
+    # Committed / impegnato varianti inglesi
+    (re.compile(r'commit+ed[\s._]*(?:eur|€|amount)?', re.I), 'impegnato_eur', 88),
+    (re.compile(r'total[\s._]*commit+ed',              re.I), 'impegnato_eur', 86),
+    (re.compile(r'net[\s._]*(?:spend|amount)[\s._]*eur', re.I), 'impegnato_eur', 84),
+    (re.compile(r'actual[\s._]*(?:spend|amount)',       re.I), 'impegnato_eur', 82),
+    (re.compile(r'purchase[\s._]*amount[\s._]*eur',     re.I), 'impegnato_eur', 84),
+    # Responsible / buyer varianti
+    (re.compile(r'respons[ai]b',                       re.I), 'utente_pres', 82),
+    (re.compile(r'account[\s._]*manag',                re.I), 'utente_pres', 80),
     # Saving con cifra o suffisso EUR/€
     (re.compile(r'sav(ing)?[\s._]*(eur|€|\d)', re.I),   'saving_eur',     88),
     (re.compile(r'%\s*sav(ing)?',                re.I),  'perc_saving_eur',88),

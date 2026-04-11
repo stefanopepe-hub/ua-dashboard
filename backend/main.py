@@ -344,20 +344,27 @@ async def upload_risorse(file: UploadFile = File(...)):
         raise HTTPException(400, f"Errore apertura file: {e}")
 
     mr = inspect_workbook(xl)
-    if mr.family != FileFamily.RISORSE:
+    # Accetta anche se classificato come altro, se ha almeno il campo 'risorsa'
+    has_risorsa = 'risorsa' in mr.fields or 'pratiche_gestite' in mr.fields
+    if not has_risorsa and mr.family != FileFamily.RISORSE:
+        fam_scores = mr.family_candidate_scores
         raise HTTPException(400,
-            f"File rilevato come '{mr.family.value}' (confidence {mr.family_confidence:.0%}). "
-            f"Questo endpoint è per file risorse con colonne: Risorsa, Pratiche Gestite, Mese, ecc. "
-            f"Confidence risorse: {mr.family_candidate_scores.get('risorse', 0):.0%}")
+            f"File non riconoscibile come file risorse. "
+            f"Tipo rilevato: '{mr.family.value}' (confidence {mr.family_confidence:.0%}). "
+            f"Score risorse: {fam_scores.get('risorse', 0):.0%}. "
+            f"Il file deve contenere colonne: Risorsa, Mese, Pratiche Gestite. "
+            f"Colonne trovate: {mr.raw_columns[:10]}")
 
     df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=mr.header_row)
     df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
     df.columns = [str(c).strip() for c in df.columns]
     col_map = mr.fields
 
-    def gcol(canonical: str):
+    def gcol(canonical: str, row):
+        """Safe gcol con row esplicita — no closure bug."""
         fm = col_map.get(canonical)
-        return row.get(fm.source_column) if fm else None
+        if not fm: return None
+        return row.get(fm.source_column)
 
     client = sb()
     lr = client.table("upload_log").insert({
@@ -370,7 +377,7 @@ async def upload_risorse(file: UploadFile = File(...)):
 
     records = []
     for _, row in df.iterrows():
-        mese_raw = _s(gcol('year_month')) or ''
+        mese_raw = _s(gcol('year_month', row)) or ''
         year = month = quarter = None
         try:
             parts = mese_raw.split('-')
@@ -386,15 +393,15 @@ async def upload_risorse(file: UploadFile = File(...)):
             "month":                 month,
             "quarter":               quarter,
             "mese_label":            mese_raw,
-            "risorsa":               _s(gcol('risorsa')) or 'N/D',
-            "struttura":             _s(gcol('str_ric')),
-            "pratiche_gestite":      _i(gcol('pratiche_gestite')),
-            "pratiche_aperte":       _i(gcol('pratiche_aperte')),
-            "pratiche_chiuse":       _i(gcol('pratiche_chiuse')),
-            "saving_generato":       _fn(gcol('saving_generato')),
-            "negoziazioni_concluse": _i(gcol('negoziazioni_concluse')),
-            "tempo_medio_giorni":    _fn(gcol('tempo_medio_risorsa')),
-            "efficienza":            _fn(gcol('efficienza')),
+            "risorsa":               _s(gcol('risorsa', row)) or 'N/D',
+            "struttura":             _s(gcol('str_ric', row)),
+            "pratiche_gestite":      _i(gcol('pratiche_gestite', row)),
+            "pratiche_aperte":       _i(gcol('pratiche_aperte', row)),
+            "pratiche_chiuse":       _i(gcol('pratiche_chiuse', row)),
+            "saving_generato":       _fn(gcol('saving_generato', row)),
+            "negoziazioni_concluse": _i(gcol('negoziazioni_concluse', row)),
+            "tempo_medio_giorni":    _fn(gcol('tempo_medio_risorsa', row)),
+            "efficienza":            _fn(gcol('efficienza', row)),
         })
 
     records_clean = [{k: clean(v) for k, v in r.items()} for r in records]
@@ -970,6 +977,95 @@ def kpi_nc_tipo():
 # ─────────────────────────────────────────────────────────────────
 # FILTRI + EXPORT
 # ─────────────────────────────────────────────────────────────────
+
+@app.get("/kpi/saving/per-protocollo-commessa")
+def kpi_per_protocollo_commessa(
+    anno: Optional[int] = Query(None), str_ric: Optional[str] = Query(None),
+    cdc: Optional[str] = Query(None), limit: int = Query(20)
+):
+    """Analisi per protocollo commessa — ricerca."""
+    df = get_saving_df(anno, str_ric, cdc,
+        cols="protoc_commessa,prefisso_commessa,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,alfa_documento,accred_albo,ragione_sociale")
+    if df.empty: return []
+    df = df.dropna(subset=["protoc_commessa"])
+    result = []
+    for prot, g in df.groupby("protoc_commessa"):
+        k = calc_kpi(g)
+        result.append({
+            "protocollo": prot,
+            "prefisso": g["prefisso_commessa"].dropna().mode().iloc[0] if not g["prefisso_commessa"].dropna().empty else None,
+            "n_fornitori": g["ragione_sociale"].nunique(),
+            **k
+        })
+    return sorted(result, key=lambda x: x["impegnato"], reverse=True)[:limit]
+
+@app.get("/kpi/saving/per-protocollo-ordine")
+def kpi_per_protocollo_ordine(
+    anno: Optional[int] = Query(None), str_ric: Optional[str] = Query(None),
+    limit: int = Query(20)
+):
+    """Analisi per protocollo ordine."""
+    df = get_saving_df(anno, str_ric,
+        cols="protoc_ordine,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,alfa_documento,accred_albo")
+    if df.empty: return []
+    df = df.dropna(subset=["protoc_ordine"])
+    # protoc_ordine è numerico
+    df["protoc_ordine"] = df["protoc_ordine"].astype(str)
+    result = []
+    for prot, g in df.groupby("protoc_ordine"):
+        k = calc_kpi(g)
+        result.append({"protocollo_ordine": prot, **k})
+    return sorted(result, key=lambda x: x["impegnato"], reverse=True)[:limit]
+
+@app.get("/kpi/saving/concentration-index")
+def kpi_concentration(anno: Optional[int] = Query(None), str_ric: Optional[str] = Query(None)):
+    """
+    Indice di concentrazione fornitori:
+    - share top 5 / top 10 / top 20
+    - HHI (Herfindahl-Hirschman Index) semplificato
+    """
+    df = get_saving_df(anno, str_ric, cols="ragione_sociale,imp_impegnato_eur")
+    if df.empty: return {}
+    total = float(df["imp_impegnato_eur"].fillna(0).sum())
+    if total == 0: return {}
+    grp = (df.groupby("ragione_sociale")["imp_impegnato_eur"].sum()
+            .sort_values(ascending=False).reset_index())
+    grp["share"] = (grp["imp_impegnato_eur"] / total * 100).round(2)
+    n = len(grp)
+    def cumshare(k): return round(float(grp.head(k)["share"].sum()), 2) if k <= n else 100.0
+    # HHI semplificato (somma quadrati delle share in %)
+    hhi = round(float((grp["share"] ** 2).sum()), 1)
+    return {
+        "n_fornitori_totali": n,
+        "total_impegnato": round(total, 2),
+        "share_top_5":  cumshare(5),
+        "share_top_10": cumshare(10),
+        "share_top_20": cumshare(20),
+        "hhi": hhi,
+        "hhi_interpretation": (
+            "Mercato molto concentrato" if hhi > 2500 else
+            "Mercato concentrato" if hhi > 1500 else
+            "Mercato moderatamente concentrato" if hhi > 1000 else
+            "Mercato non concentrato"
+        ),
+        "top_5": grp.head(5)[["ragione_sociale","imp_impegnato_eur","share"]].to_dict(orient="records"),
+    }
+
+@app.get("/kpi/saving/per-buyer-cdc")
+def kpi_per_buyer_cdc(anno: Optional[int] = Query(None)):
+    """Matrice saving per buyer × CDC."""
+    df = get_saving_df(anno,
+        cols="utente_presentazione,utente,cdc,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,accred_albo,alfa_documento")
+    if df.empty: return []
+    df["buyer"] = df["utente_presentazione"].fillna(df["utente"])
+    df["buyer"] = df["buyer"].fillna("N/D")
+    result = []
+    for (buyer, cdc_v), g in df.groupby(["buyer", "cdc"]):
+        if not buyer or not cdc_v: continue
+        k = calc_kpi(g)
+        result.append({"buyer": buyer, "cdc": cdc_v, **k})
+    return sorted(result, key=lambda x: x["saving"], reverse=True)
+
 
 @app.get("/filtri/disponibili")
 def filtri_disponibili(anno: Optional[int] = Query(None)):
