@@ -16,6 +16,20 @@ const CONFIDENCE_CONFIG = {
   low:    { cls: 'bg-red-100 text-red-700',      label: 'Bassa' },
 }
 
+const FAMILY_ALLOWED = {
+  saving: ['savings', 'orders_detail'],
+  risorse: ['risorse'],
+  tempi: ['tempi'],
+  nc: ['nc'],
+}
+
+const DOMAIN_LABEL = {
+  saving: 'Saving / Ordini',
+  risorse: 'Risorse / Team',
+  tempi: 'Tempi Attraversamento',
+  nc: 'Non Conformità',
+}
+
 function SmartUploadCard({ tipo, label, color, desc, onSuccess }) {
   const [file, setFile]          = useState(null)
   const [cdc, setCdc]            = useState('')
@@ -73,6 +87,12 @@ function SmartUploadCard({ tipo, label, color, desc, onSuccess }) {
 
   const conf     = inspection?.overall_confidence
   const confConf = CONFIDENCE_CONFIG[conf] || null
+  const detectedFamily = inspection?.family || inspection?.family_detected || null
+  const allowedFamilies = FAMILY_ALLOWED[tipo] || []
+  const familyMismatch = Boolean(detectedFamily && !allowedFamilies.includes(detectedFamily))
+  const mismatchText = familyMismatch
+    ? `Questo file appartiene a "${inspection?.family_label || detectedFamily}" e non può essere importato nella sezione "${DOMAIN_LABEL[tipo] || tipo}".`
+    : ''
 
   return (
     <div className={`bg-white rounded-2xl border border-gray-100 shadow-sm p-5 border-l-4 ${borderCls}`}>
@@ -126,6 +146,12 @@ function SmartUploadCard({ tipo, label, color, desc, onSuccess }) {
                   <span>Analisi: {inspection.available_analyses.slice(0, 3).join(', ')}{inspection.available_analyses.length > 3 ? ` +${inspection.available_analyses.length - 3}` : ''}</span>
                 </div>
               )}
+              {familyMismatch && (
+                <div className="text-red-600 flex items-start gap-1">
+                  <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0"/>
+                  <span>{mismatchText}</span>
+                </div>
+              )}
               {(inspection.warnings || []).slice(0, 2).map((w, i) => (
                 <div key={i} className="text-amber-600 flex items-start gap-1">
                   <AlertTriangle className="h-3 w-3 mt-0.5 flex-shrink-0"/>
@@ -177,7 +203,7 @@ function SmartUploadCard({ tipo, label, color, desc, onSuccess }) {
           {file ? 'Cambia file' : 'Seleziona file Excel'}
         </button>
 
-        {file && status === 'ready' && !inspection?.is_blocked && (
+        {file && status === 'ready' && !inspection?.is_blocked && !familyMismatch && (
           <button onClick={handleImport} className="btn-primary text-xs">
             <CheckCircle className="h-3.5 w-3.5"/> Importa
           </button>
@@ -185,6 +211,11 @@ function SmartUploadCard({ tipo, label, color, desc, onSuccess }) {
         {file && status === 'ready' && inspection?.is_blocked && (
           <span className="text-xs text-red-600 flex items-center gap-1">
             <AlertCircle className="h-3.5 w-3.5"/> File non importabile
+          </span>
+        )}
+        {file && status === 'ready' && familyMismatch && (
+          <span className="text-xs text-red-600 flex items-center gap-1">
+            <AlertCircle className="h-3.5 w-3.5"/> Dominio errato
           </span>
         )}
         {status === 'importing' && (
