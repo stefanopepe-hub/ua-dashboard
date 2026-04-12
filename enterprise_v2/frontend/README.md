@@ -3,12 +3,8 @@
 ## Obiettivo
 Frontend separato dall'app attuale.
 
-## Stack iniziale
-- React
-- Vite
-
-## Stato batch 2
+## Stato batch 3
 - Health check backend
 - Upload file Excel
 - Chiamata a /inspect-excel
-- Visualizzazione struttura file, fogli, mapping, readiness
+- Pagina Saving Dashboard demo con KPI, top fornitori, tipologie doc, CDC, buyer, protocolli, YoY
