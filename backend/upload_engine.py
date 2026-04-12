@@ -1,18 +1,13 @@
 """
-upload_engine.py — Enterprise Upload Engine v1.0
+upload_engine.py — Enterprise Upload Engine v1.1
 Fondazione Telethon ETS — UA Dashboard
+
+FIX v1.1:
+  - cambio None-safe: cambio_raw > 0 check prima della moltiplicazione
 
 ARCHITETTURA:
   File Excel → WorkbookInspector → FamilyClassifier → ColumnMapper
   → Normalizer → Validator → CanonicalPersister → ReadinessMatrix
-
-PRINCIPI:
-  - Zero crash su file business supportati
-  - Classificazione automatica della famiglia
-  - Mapping adattivo senza dipendenza da nomi esatti
-  - Supporto multi-anno per analisi YoY
-  - Degradazione graceful: analisi parziali con motivazioni chiare
-  - Unico punto di verità per preview + import + analytics
 """
 
 import io
@@ -35,10 +30,6 @@ from ingestion_engine import (
 log = logging.getLogger("ua.upload")
 
 
-# ══════════════════════════════════════════════════════════════════
-# DOCUMENT TYPE LABELS — AUTORITATIVI (Fondazione Telethon ETS)
-# ══════════════════════════════════════════════════════════════════
-
 DOC_TYPE_LABELS = {
     "ORN":    "Ordine Ricerca",
     "ORD":    "Ordine Diretto Ricerca",
@@ -56,14 +47,9 @@ DOC_TYPE_AREA = {
 }
 
 
-# ══════════════════════════════════════════════════════════════════
-# DATACLASSES
-# ══════════════════════════════════════════════════════════════════
-
 @dataclass
 class UploadResult:
-    """Risultato completo di un'operazione di upload."""
-    status: str                          # "ok" | "partial" | "failed"
+    status: str
     upload_id: Optional[str]
     rows_inserted: int
     rows_skipped: int
@@ -113,7 +99,6 @@ class UploadResult:
 
 @dataclass
 class WorkbookInspection:
-    """Risultato dell'ispezione workbook."""
     sheet_name: str
     header_row: int
     df: pd.DataFrame
@@ -127,10 +112,6 @@ class WorkbookInspection:
 # ══════════════════════════════════════════════════════════════════
 
 def inspect_bytes(file_bytes: bytes, filename: str = "") -> MappingResult:
-    """
-    Ispeziona un file Excel dai bytes.
-    Entry point per /upload/inspect.
-    """
     try:
         xl = pd.ExcelFile(io.BytesIO(file_bytes))
         return inspect_workbook(xl)
@@ -140,23 +121,13 @@ def inspect_bytes(file_bytes: bytes, filename: str = "") -> MappingResult:
 
 
 def inspect_and_load(file_bytes: bytes, filename: str = "") -> WorkbookInspection:
-    """
-    Ispeziona il workbook e carica il DataFrame completo per la normalizzazione.
-    
-    Performance:
-    - inspect_workbook usa nrows=200 (veloce, per mapping)
-    - qui facciamo UN SOLO full read (per la normalizzazione)
-    - totale: 1 full read invece di 2-4
-    """
     try:
         xl = pd.ExcelFile(io.BytesIO(file_bytes))
     except Exception as e:
         raise ValueError(f"Errore apertura file '{filename}': {e}")
 
-    # Step 1: ispeziona struttura e mappa colonne (veloce — usa sample)
     mr = inspect_workbook(xl)
 
-    # Step 2: UN SOLO full read per la normalizzazione
     try:
         df = pd.read_excel(xl, sheet_name=mr.sheet_name, header=mr.header_row)
     except Exception as e:
@@ -166,19 +137,13 @@ def inspect_and_load(file_bytes: bytes, filename: str = "") -> WorkbookInspectio
         except Exception as e2:
             raise ValueError(f"Impossibile leggere il foglio '{mr.sheet_name}': {e2}")
 
-    # Pulizia colonne
     df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Aggiorna il mapping usando il df completo per valori più robusti
-    # (il mapping sul sample è identico ma vogliamo consistenza)
-    from ingestion_engine import build_column_map, classify_file_family
     full_col_map = build_column_map(df)
-    # Usa il full map se ha più campi del sample map
     if len(full_col_map) >= len(mr.fields):
         mr.fields = full_col_map
 
-    # Rilevamento anni
     years_found, year_dominant = _detect_years(df, mr.fields)
 
     return WorkbookInspection(
@@ -192,7 +157,6 @@ def inspect_and_load(file_bytes: bytes, filename: str = "") -> WorkbookInspectio
 
 
 def _detect_years(df: pd.DataFrame, col_map: Dict[str, FieldMapping]) -> Tuple[List[int], Optional[int]]:
-    """Rileva gli anni presenti nel file."""
     date_fm = col_map.get('data_doc') or col_map.get('data_origine') or col_map.get('year_month')
     if not date_fm:
         return [], None
@@ -204,7 +168,6 @@ def _detect_years(df: pd.DataFrame, col_map: Dict[str, FieldMapping]) -> Tuple[L
     try:
         series = df[col].dropna()
         if 'year_month' in (date_fm.canonical or ''):
-            # Formato YYYY-MM
             years = series.astype(str).str[:4].astype(int, errors='ignore').dropna().unique().tolist()
             years = [y for y in years if 2000 <= y <= 2100]
         else:
@@ -214,11 +177,9 @@ def _detect_years(df: pd.DataFrame, col_map: Dict[str, FieldMapping]) -> Tuple[L
         if not years:
             return [], None
 
-        # Anno dominante
         if len(years) == 1:
             return years, years[0]
 
-        # Conta per anno
         if 'year_month' in (date_fm.canonical or ''):
             yr_counts = series.astype(str).str[:4].value_counts()
         else:
@@ -229,19 +190,13 @@ def _detect_years(df: pd.DataFrame, col_map: Dict[str, FieldMapping]) -> Tuple[L
         dominant = int(yr_counts.index[0])
         dominant_pct = yr_counts.iloc[0] / total
 
-        # Anno dominante solo se ≥80% (meno restrittivo di prima)
         return years, (dominant if dominant_pct >= 0.80 else None)
     except Exception as e:
         log.warning(f"Year detection failed: {e}")
         return [], None
 
 
-# ══════════════════════════════════════════════════════════════════
-# GCOL — lettore universale da col_map + row
-# ══════════════════════════════════════════════════════════════════
-
 def _gcol(col_map: Dict[str, FieldMapping], canonical: str, row: pd.Series) -> Any:
-    """Legge valore da riga usando mapping canonico. Mai crasha."""
     fm = col_map.get(canonical)
     if not fm:
         return None
@@ -249,7 +204,7 @@ def _gcol(col_map: Dict[str, FieldMapping], canonical: str, row: pd.Series) -> A
 
 
 # ══════════════════════════════════════════════════════════════════
-# NORMALIZERS — uno per famiglia
+# NORMALIZERS
 # ══════════════════════════════════════════════════════════════════
 
 def normalize_saving_row(
@@ -258,20 +213,17 @@ def normalize_saving_row(
     upload_id: str,
     cdc_override: Optional[str] = None,
 ) -> Optional[dict]:
-    """
-    Normalizza una riga saving nel modello canonico DB.
-    Ritorna None se data_doc non è valida (riga da saltare).
-    """
     g = lambda k: _gcol(col_map, k, row)
 
     dv = _d(g('data_doc'))
     if not dv:
         return None
 
-    cambio = _f(g('cambio'), 1.0) or 1.0
+    # FIX: cambio None-safe — _f ritorna 0.0 se None, or 1.0 non basta
+    cambio_raw = _f(g('cambio'), 1.0)
+    cambio = cambio_raw if cambio_raw and cambio_raw > 0 else 1.0
     valuta = _s(g('valuta')) or 'EURO'
 
-    # Importi: EUR priorità assoluta, poi valuta convertita
     has_eur = 'listino_eur' in col_map and 'impegnato_eur' in col_map
     if has_eur:
         lst   = _f(g('listino_eur'))
@@ -284,13 +236,11 @@ def normalize_saving_row(
         sav   = _f(g('saving_val')) * cambio
         pct_s = _f(g('perc_saving_val'))
 
-    # Ricalcola saving se mancante
     if sav == 0 and lst > 0 and imp > 0:
         sav = lst - imp
     if pct_s == 0 and lst > 0:
         pct_s = safe_pct(sav, lst)
 
-    # CDC
     from domain import derive_cdc
     if cdc_override:
         cdc_val = cdc_override
@@ -302,7 +252,6 @@ def normalize_saving_row(
             _s(g('desc_cdc')) or ''
         )
 
-    # Commessa
     pc = _s(g('protoc_commessa'))
     pref, anno_comm = parse_commessa(pc)
 
@@ -350,19 +299,17 @@ def normalize_risorse_row(
     row: pd.Series,
     upload_id: str,
 ) -> dict:
-    """Normalizza una riga risorse nel modello canonico."""
     g = lambda k: _gcol(col_map, k, row)
 
     mese_raw = _s(g('year_month')) or ''
     year = month = quarter = None
     try:
-        # Supporta YYYY-MM, YYYY/MM, MMYYYY, ecc.
         clean_m = re.sub(r'[/\\]', '-', mese_raw)
         parts = clean_m.split('-')
         if len(parts) == 2:
-            if len(parts[0]) == 4:  # YYYY-MM
+            if len(parts[0]) == 4:
                 year, month = int(parts[0]), int(parts[1])
-            else:                    # MM-YYYY
+            else:
                 month, year = int(parts[0]), int(parts[1])
             quarter = (month - 1) // 3 + 1
     except Exception:
@@ -394,7 +341,6 @@ def normalize_nc_row(
     row: pd.Series,
     upload_id: str,
 ) -> dict:
-    """Normalizza una riga non conformità."""
     g = lambda k: _gcol(col_map, k, row)
     r = {
         "upload_id":             upload_id,
@@ -413,7 +359,6 @@ def normalize_tempi_row(
     row: pd.Series,
     upload_id: str,
 ) -> dict:
-    """Normalizza una riga tempi attraversamento."""
     g = lambda k: _gcol(col_map, k, row)
     r = {
         "upload_id":        upload_id,
@@ -429,15 +374,10 @@ def normalize_tempi_row(
 
 
 # ══════════════════════════════════════════════════════════════════
-# BATCH INSERTER — robusto con retry parziale
+# BATCH INSERTER
 # ══════════════════════════════════════════════════════════════════
 
 def batch_insert(client, table: str, records: List[dict], batch_size: int = 5000) -> Tuple[int, List[str]]:
-    """
-    Inserisce record in batch.
-    Ritorna (inserted_count, errors).
-    Non crasha se un batch fallisce — continua con gli altri.
-    """
     inserted = 0
     errors = []
 
@@ -459,11 +399,6 @@ def batch_insert(client, table: str, records: List[dict], batch_size: int = 5000
 
 
 def _translate_db_error(raw_error: str, table: str) -> str:
-    """
-    Traduce errori PostgreSQL crudi in messaggi business-friendly.
-    Non espone mai stack trace, codici interni, o nomi di colonne DB all'utente.
-    Logga il dettaglio completo internamente.
-    """
     raw = raw_error.lower()
 
     if '23514' in raw or ('check' in raw and 'violat' in raw):
@@ -502,9 +437,6 @@ def _translate_db_error(raw_error: str, table: str) -> str:
 # ══════════════════════════════════════════════════════════════════
 
 def compute_readiness(mr: MappingResult, wbi: WorkbookInspection) -> dict:
-    """
-    Calcola la matrice di readiness analitica.
-    """
     col_map = mr.fields
     years = wbi.years_found
     year_dom = wbi.year_dominant
@@ -530,9 +462,6 @@ def compute_readiness(mr: MappingResult, wbi: WorkbookInspection) -> dict:
     return readiness
 
 
-
-# Mappa FileFamily → tipo DB per upload_log.tipo
-# Il DB ha CHECK constraint su ('saving', 'tempi', 'nc', 'risorse')
 FAMILY_TO_TIPO_DB = {
     FileFamily.SAVINGS:         "saving",
     FileFamily.ORDERS_DETAIL:   "saving",
@@ -544,7 +473,6 @@ FAMILY_TO_TIPO_DB = {
 }
 
 def _family_to_tipo(family: FileFamily) -> str:
-    """Converte FileFamily nel valore 'tipo' accettato dal DB upload_log CHECK constraint."""
     return FAMILY_TO_TIPO_DB.get(family, "saving")
 
 
@@ -567,7 +495,6 @@ def _yoy_note(years: List[int], dominant: Optional[int]) -> str:
     if len(years) == 1:
         return f"Anno {years[0]} rilevato. Carica file {years[0]+1} per abilitare confronto YoY."
     if dominant:
-        others = [y for y in years if y != dominant]
         return (f"Anno dominante: {dominant} ({len(years)} anni totali: {', '.join(str(y) for y in sorted(years))}). "
                 f"Confronto YoY abilitato tra {min(years)} e {max(years)}.")
     return f"Più anni trovati ({', '.join(str(y) for y in sorted(years))}). File multi-anno importato integralmente."
@@ -577,7 +504,6 @@ def _normalization_notes(mr: MappingResult, wbi: WorkbookInspection) -> List[str
     notes = []
     col_map = mr.fields
 
-    # Note su campi inferiti da valori (non da nome colonna)
     for fm in col_map.values():
         if fm.method == 'value':
             notes.append(
@@ -590,11 +516,9 @@ def _normalization_notes(mr: MappingResult, wbi: WorkbookInspection) -> List[str
                 f"confidenza {fm.confidence:.0%}"
             )
 
-    # Note su anno
     if wbi.years_found:
         notes.append(f"Anni trovati nel file: {', '.join(str(y) for y in wbi.years_found)}")
 
-    # Note su macro_categoria (spesso ha spazi finali)
     if 'macro_cat' in col_map:
         notes.append("macro_categoria normalizzata (spazi finali rimossi)")
 
@@ -602,7 +526,7 @@ def _normalization_notes(mr: MappingResult, wbi: WorkbookInspection) -> List[str
 
 
 # ══════════════════════════════════════════════════════════════════
-# MAIN UPLOAD HANDLERS — uno per famiglia
+# UPLOAD HANDLERS
 # ══════════════════════════════════════════════════════════════════
 
 def _apply_year_filter(
@@ -610,11 +534,6 @@ def _apply_year_filter(
     col_map: Dict[str, FieldMapping],
     yoy_mode: bool,
 ) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    Gestisce il filtro anno:
-    - yoy_mode=False: prende solo l'anno dominante (≥80%)
-    - yoy_mode=True: prende tutto (multi-anno per YoY)
-    """
     notes = []
     date_fm = col_map.get('data_doc')
     if not date_fm or date_fm.source_column not in df.columns:
@@ -649,10 +568,6 @@ def handle_saving_upload(
     cdc_override: Optional[str] = None,
     yoy_mode: bool = False,
 ) -> Tuple[int, int, List[str]]:
-    """
-    Normalizza e inserisce righe saving.
-    Ritorna (inserted, skipped, notes).
-    """
     col_map = wbi.mapping_result.fields
     df, notes = _apply_year_filter(wbi.df, col_map, yoy_mode)
 
@@ -679,7 +594,6 @@ def handle_risorse_upload(
     upload_id: str,
     client,
 ) -> Tuple[int, int, List[str]]:
-    """Normalizza e inserisce righe risorse."""
     col_map = wbi.mapping_result.fields
     df = wbi.df
     notes = []
@@ -702,7 +616,6 @@ def handle_nc_upload(
     upload_id: str,
     client,
 ) -> Tuple[int, int, List[str]]:
-    """Normalizza e inserisce righe non conformità."""
     col_map = wbi.mapping_result.fields
     df = wbi.df
     records = [normalize_nc_row(col_map, row, upload_id) for _, row in df.iterrows()]
@@ -715,7 +628,6 @@ def handle_tempi_upload(
     upload_id: str,
     client,
 ) -> Tuple[int, int, List[str]]:
-    """Normalizza e inserisce righe tempi."""
     col_map = wbi.mapping_result.fields
     df = wbi.df
     records = [normalize_tempi_row(col_map, row, upload_id) for _, row in df.iterrows()]
@@ -729,7 +641,7 @@ def handle_tempi_upload(
 
 FAMILY_TABLE_MAP = {
     FileFamily.SAVINGS:       "saving",
-    FileFamily.ORDERS_DETAIL: "saving",         # stessa tabella saving
+    FileFamily.ORDERS_DETAIL: "saving",
     FileFamily.RISORSE:       "resource_performance",
     FileFamily.NC:            "non_conformita",
     FileFamily.TEMPI:         "tempo_attraversamento",
@@ -743,23 +655,8 @@ def process_upload(
     yoy_mode: bool = False,
     forced_family: Optional[str] = None,
 ) -> UploadResult:
-    """
-    Orchestratore principale upload.
-    
-    Entry point unico per tutti i tipi di file.
-    Classifica → normalizza → persiste → ritorna readiness matrix.
-    
-    Parametri:
-        file_bytes:     contenuto del file Excel
-        filename:       nome originale del file
-        client:         Supabase client
-        cdc_override:   CDC fisso (opzionale)
-        yoy_mode:       True = non filtrare per anno (multi-anno per YoY)
-        forced_family:  forza la famiglia (opzionale, per override utente)
-    """
     normalization_notes = []
-    
-    # ── Step 1: Ispeziona workbook ────────────────────────────────
+
     try:
         wbi = inspect_and_load(file_bytes, filename)
     except ValueError as e:
@@ -774,14 +671,12 @@ def process_upload(
 
     mr = wbi.mapping_result
 
-    # ── Step 2: Override famiglia se richiesto dall'utente ────────
     if forced_family:
         try:
             mr = _force_family(mr, FileFamily(forced_family))
         except ValueError:
             normalization_notes.append(f"Family override '{forced_family}' non valido, ignorato")
 
-    # ── Step 3: Valida se il file è processabile ──────────────────
     if mr.overall_score < 0.20:
         return UploadResult(
             status="failed", upload_id=None, rows_inserted=0, rows_skipped=0,
@@ -804,14 +699,13 @@ def process_upload(
             error=f"File non riconoscibile come file procurement (score: {mr.overall_score:.0%})",
         )
 
-    # ── Step 4: Crea upload_log entry ────────────────────────────
     readiness = compute_readiness(mr, wbi)
     preview_dict = mapping_result_to_dict(mr)
 
     try:
         lr = client.table("upload_log").insert({
             "filename":           filename,
-            "tipo":               _family_to_tipo(mr.family),   # compatibile con DB CHECK constraint
+            "tipo":               _family_to_tipo(mr.family),
             "cdc_filter":         cdc_override,
             "family_detected":    mr.family.value,
             "mapping_confidence": mr.overall_confidence.value,
@@ -840,7 +734,6 @@ def process_upload(
             error=f"Errore DB log: {str(e)[:200]}",
         )
 
-    # ── Step 5: Dispatch al handler corretto ──────────────────────
     inserted = skipped = 0
     handler_notes = []
     handler_error = None
@@ -863,10 +756,8 @@ def process_upload(
                 wbi, upload_id, client
             )
         else:
-            # Family non supportata per import diretto
             handler_notes.append(
-                f"Famiglia '{mr.family.value}' riconosciuta ma import non ancora supportato. "
-                f"Famiglie supportate: savings, risorse, non_conformita, tempi."
+                f"Famiglia '{mr.family.value}' riconosciuta ma import non ancora supportato."
             )
             handler_error = "Family not importable"
 
@@ -874,13 +765,11 @@ def process_upload(
         handler_error = str(e)
         log.error(f"Handler error for {mr.family}: {e}")
 
-    # ── Step 6: Aggiorna upload_log con risultati ─────────────────
     try:
         client.table("upload_log").update({"rows_inserted": inserted}).eq("id", upload_id).execute()
     except Exception:
         pass
 
-    # ── Step 7: Costruisci risultato ──────────────────────────────
     normalization_notes.extend(handler_notes)
     normalization_notes.extend(readiness['normalization_notes'])
 
@@ -917,7 +806,6 @@ def process_upload(
 
 
 def _force_family(mr: MappingResult, new_family: FileFamily) -> MappingResult:
-    """Override della famiglia rilevata — per conferma utente."""
     mr.family = new_family
-    mr.family_confidence = 0.70  # confidence ridotta per override
+    mr.family_confidence = 0.70
     return mr
