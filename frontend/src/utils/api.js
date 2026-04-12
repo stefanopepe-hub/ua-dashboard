@@ -123,31 +123,31 @@ export const api = {
   },
 
   uploadRisorse: async (file) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    const r = await fetch(`${BASE}/upload/auto`, { method: 'POST', body: fd })
-    const data = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(data?.detail || `HTTP ${r.status}`)
-    return data
-  },
+  const fd = new FormData()
+  fd.append('file', file)
+  const r = await fetch(`${BASE}/upload/risorse`, { method: 'POST', body: fd })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(data?.detail || `HTTP ${r.status}`)
+  return data
+},
 
   uploadTempi: async (file) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    const r = await fetch(`${BASE}/upload/auto`, { method: 'POST', body: fd })
-    const data = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(data?.detail || `HTTP ${r.status}`)
-    return data
-  },
+  const fd = new FormData()
+  fd.append('file', file)
+  const r = await fetch(`${BASE}/upload/tempi`, { method: 'POST', body: fd })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(data?.detail || `HTTP ${r.status}`)
+  return data
+},
 
   uploadNc: async (file) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    const r = await fetch(`${BASE}/upload/auto`, { method: 'POST', body: fd })
-    const data = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(data?.detail || `HTTP ${r.status}`)
-    return data
-  },
+  const fd = new FormData()
+  fd.append('file', file)
+  const r = await fetch(`${BASE}/upload/nc`, { method: 'POST', body: fd })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(data?.detail || `HTTP ${r.status}`)
+  return data
+},
 
   // ── Export ────────────────────────────────────────────────────
   exportExcel: async (body) => {
