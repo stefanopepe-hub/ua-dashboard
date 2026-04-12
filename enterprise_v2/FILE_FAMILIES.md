@@ -16,5 +16,8 @@ Il sistema deve riconoscere automaticamente la famiglia file tramite:
 - pattern dei valori
 - contesto del file
 
+## Confidence score
+Ogni ispezione deve produrre un confidence score iniziale basato sul numero di colonne mappate rispetto al totale.
+
 ## Obiettivo
 Non dipendere da un template rigido.
