@@ -138,33 +138,53 @@ async def upload_risorse(file: UploadFile = File(...)):
 
 @router.post("/tempi")
 async def upload_tempi(file: UploadFile = File(...)):
-    """Upload file tempi attraversamento con guardrail di famiglia obbligatori."""
+    """Upload file tempi attraversamento."""
     contents = await file.read()
     try:
-        result = process_upload(file_bytes=contents, filename=file.filename, client=sb(), forced_family="tempi")
+        result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
     except Exception as e:
         log.error(f"upload_tempi error {file.filename}: {e}", exc_info=True)
         raise HTTPException(500, "Errore durante l'elaborazione del file.")
+
+    detected = (result.family or "").strip().lower()
+    allowed = {"tempi", "cycle_times", "tempo_attraversamento"}
+
+    if detected not in allowed:
+        raise HTTPException(
+            400,
+            f"Questo file non appartiene al dominio Tempi Attraversamento. "
+            f"Famiglia rilevata: {result.family_label or result.family or 'sconosciuta'}."
+        )
+
     if result.status == "failed" and not result.upload_id:
         raise HTTPException(400, result.error or "File tempi non riconoscibile.")
-    if result.family != "tempi":
-        raise HTTPException(400, f"File non coerente con il dominio Tempi. Famiglia rilevata: {result.family_label or result.family}.")
+
     return result.to_dict()
 
 
 @router.post("/nc")
 async def upload_nc(file: UploadFile = File(...)):
-    """Upload file non conformità con guardrail di famiglia obbligatori."""
+    """Upload file non conformità."""
     contents = await file.read()
     try:
-        result = process_upload(file_bytes=contents, filename=file.filename, client=sb(), forced_family="nc")
+        result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
     except Exception as e:
         log.error(f"upload_nc error {file.filename}: {e}", exc_info=True)
         raise HTTPException(500, "Errore durante l'elaborazione del file.")
+
+    detected = (result.family or "").strip().lower()
+    allowed = {"nc", "non_conformities", "non_conformita"}
+
+    if detected not in allowed:
+        raise HTTPException(
+            400,
+            f"Questo file non appartiene al dominio Non Conformità. "
+            f"Famiglia rilevata: {result.family_label or result.family or 'sconosciuta'}."
+        )
+
     if result.status == "failed" and not result.upload_id:
         raise HTTPException(400, result.error or "File NC non riconoscibile.")
-    if result.family != "nc":
-        raise HTTPException(400, f"File non coerente con il dominio Non Conformità. Famiglia rilevata: {result.family_label or result.family}.")
+
     return result.to_dict()
 
 
