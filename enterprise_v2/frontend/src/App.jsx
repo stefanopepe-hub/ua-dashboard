@@ -4,6 +4,7 @@ import SavingDashboardPage from "./pages/SavingDashboardPage.jsx";
 import ResourcesPage from "./pages/ResourcesPage.jsx";
 import CycleTimesPage from "./pages/CycleTimesPage.jsx";
 import NonConformitiesPage from "./pages/NonConformitiesPage.jsx";
+import DeployReadinessPage from "./pages/DeployReadinessPage.jsx";
 
 export default function App() {
   const [page, setPage] = useState("inspect");
@@ -20,6 +21,7 @@ export default function App() {
         <button style={buttonStyle} onClick={() => setPage("resources")}>Risorse</button>
         <button style={buttonStyle} onClick={() => setPage("cycle")}>Tempi Attraversamento</button>
         <button style={buttonStyle} onClick={() => setPage("nc")}>Non Conformità</button>
+        <button style={buttonStyle} onClick={() => setPage("deploy")}>Deploy Readiness</button>
       </div>
 
       {page === "inspect" && <InspectPage />}
@@ -27,6 +29,7 @@ export default function App() {
       {page === "resources" && <ResourcesPage />}
       {page === "cycle" && <CycleTimesPage />}
       {page === "nc" && <NonConformitiesPage />}
+      {page === "deploy" && <DeployReadinessPage />}
     </div>
   );
 }
