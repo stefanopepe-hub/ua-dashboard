@@ -518,7 +518,7 @@ def detect_header_row(df_raw: pd.DataFrame, max_scan: int = 10) -> int:
 
 def _is_pure_number(s: str) -> bool:
     try:
-              float(s.replace(',', '.').replace(' ', ''))
+        float(s.replace(',', '.').replace(' ', ''))
         return True
     except ValueError:
         return False
