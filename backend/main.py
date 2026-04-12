@@ -2,10 +2,19 @@
 UA Dashboard Backend v9 — Fondazione Telethon ETS
 Architettura unificata: UN SOLO pipeline ingestion per preview + import + analytics.
 
-FIX v9.1:
-  1. upload_auto: aggiunto return result mancante
-  2. MESI: dizionario definito (era usato ma mai dichiarato)
-  3. CORS: URL frontend V2 aggiunto agli origins
+ROOT CAUSES RISOLTI:
+  1. Split-brain: upload_saving() ora usa ingestion_engine (non domain.COL_MAP)
+  2. Field mismatch: colonne DB canoniche usate ovunque
+  3. Resource file: nuovo endpoint + tabella
+  4. /wake timeout: timeout esteso a 60s nel frontend
+  5. Missing endpoints: tutte le routes esistono e funzionano
+
+CANONICAL DB FIELDS (tabella saving):
+  imp_listino_eur    = Imp. Iniziale €   (listino)
+  imp_impegnato_eur  = Imp. Negoziato €  (impegnato)
+  saving_eur         = Saving.1          (saving)
+  macro_categoria    = macro categorie
+  utente_presentazione = utente per presentazione
 """
 import os, io, logging
 from typing import Optional
@@ -16,6 +25,7 @@ from fastapi.responses import StreamingResponse
 from supabase import create_client
 from dotenv import load_dotenv
 
+# ── Import moduli interni ─────────────────────────────────────────
 from upload_engine import (
     process_upload, inspect_bytes, inspect_and_load,
     compute_readiness, UploadResult, WorkbookInspection,
@@ -33,41 +43,27 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ua")
 
-# ── FIX: MESI era usato in kpi_yoy e kpi_mensile_area ma mai definito ──
-MESI = {
-    1: "Gen", 2: "Feb", 3: "Mar", 4: "Apr",
-    5: "Mag", 6: "Giu", 7: "Lug", 8: "Ago",
-    9: "Set", 10: "Ott", 11: "Nov", 12: "Dic",
-}
-
-app = FastAPI(title="UA Dashboard API", version="9.1.0")
+app = FastAPI(title="UA Dashboard API", version="9.0.0")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
-
-# ── FIX: aggiunto URL frontend V2 ──
-ORIGINS = os.getenv(
-    "ALLOWED_ORIGINS",
-    "https://ua-enterprise-v2-frontend.onrender.com,https://ua-acquisti-frontend.onrender.com,http://localhost:5173"
-).split(",")
+ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=ORIGINS,
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
 )
 
 def sb():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ─────────────────────────────────────────────────────────────────
-# PAGINAZIONE SUPABASE
+# PAGINAZIONE SUPABASE — max 1000 righe per request
 # ─────────────────────────────────────────────────────────────────
 PAGE = 1000
 
 def query(table: str, filters=None, select: str = "*") -> list:
+    """Query con paginazione automatica."""
     client = sb()
     all_rows, offset = [], 0
     while True:
@@ -84,6 +80,7 @@ def query(table: str, filters=None, select: str = "*") -> list:
 
 def saving_filters(anno=None, str_ric=None, cdc=None, alfa=None,
                    macro=None, pref_comm=None):
+    """Costruisce filtri Supabase per la tabella saving."""
     fs = []
     if anno:
         fs.append(lambda q, a=anno: q.gte("data_doc", f"{a}-01-01")
@@ -97,10 +94,12 @@ def saving_filters(anno=None, str_ric=None, cdc=None, alfa=None,
 
 def get_saving_df(anno=None, str_ric=None, cdc=None, alfa=None,
                   macro=None, pref_comm=None, cols="*") -> pd.DataFrame:
+    """Carica saving dal DB con paginazione e normalizzazione."""
     rows = query("saving", saving_filters(anno, str_ric, cdc, alfa, macro, pref_comm), cols)
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+    # Normalizza tipi
     df['data_doc'] = pd.to_datetime(df.get('data_doc', pd.Series()), errors='coerce')
     for c in ['imp_listino_eur', 'imp_impegnato_eur', 'saving_eur']:
         if c in df.columns:
@@ -111,27 +110,35 @@ def get_saving_df(anno=None, str_ric=None, cdc=None, alfa=None,
     return df
 
 
+# ─────────────────────────────────────────────────────────────────
+# UTILITY: costruisce record canonical dalla riga usando ingestion_engine
+# ─────────────────────────────────────────────────────────────────
+
 def build_saving_record(
-    col_map: dict,
+    col_map: dict,       # canonical → FieldMapping
     row: pd.Series,
     upload_id: str,
     cdc_override: Optional[str] = None,
 ) -> Optional[dict]:
+    """
+    Costruisce il record DB canonico da una riga.
+    Usa ingestion_engine col_map (FieldMapping objects).
+    """
     def gcol(canonical: str):
         fm = col_map.get(canonical)
         if not fm:
             return None
         return row.get(fm.source_column)
 
+    # Data — obbligatoria
     dv = _d(gcol('data_doc'))
     if not dv:
         return None
 
-    # FIX: cambio None-safe
-    cambio_raw = _f(gcol('cambio'), 1.0)
-    cambio = cambio_raw if cambio_raw and cambio_raw > 0 else 1.0
+    cambio = _f(gcol('cambio'), 1.0) or 1.0
     valuta = _s(gcol('valuta')) or 'EURO'
 
+    # Importi EUR (priorità) o valuta originale convertita
     has_eur = 'listino_eur' in col_map and 'impegnato_eur' in col_map
     if has_eur:
         lst   = _f(gcol('listino_eur'))
@@ -144,11 +151,13 @@ def build_saving_record(
         sav   = _f(gcol('saving_val')) * cambio
         pct_s = _f(gcol('perc_saving_val'))
 
+    # Ricalcola se mancante
     if sav == 0 and lst > 0 and imp > 0:
         sav = lst - imp
     if pct_s == 0 and lst > 0:
         pct_s = sav / lst * 100
 
+    # CDC
     if cdc_override:
         cdc_val = cdc_override
     elif 'cdc' in col_map:
@@ -159,6 +168,7 @@ def build_saving_record(
             _s(gcol('desc_cdc')) or ''
         )
 
+    # Commessa
     pc = _s(gcol('protoc_commessa'))
     pref, anno_comm = parse_commessa(pc)
 
@@ -187,10 +197,12 @@ def build_saving_record(
         "cdc":                  cdc_val,
         "valuta":               valuta,
         "cambio":               cambio,
+        # Canonical financial fields (DB canonical names)
         "imp_listino_eur":      lst,
         "imp_impegnato_eur":    imp,
         "saving_eur":           sav,
         "perc_saving_eur":      pct_s,
+        # Legacy fields (valuta originale)
         "imp_iniziale":         _f(gcol('listino_val')),
         "imp_negoziato":        _f(gcol('impegnato_val')),
         "saving_val":           _f(gcol('saving_val')),
@@ -202,11 +214,18 @@ def build_saving_record(
 
 
 # ─────────────────────────────────────────────────────────────────
-# UPLOAD ENDPOINTS
+# UPLOAD — SAVING  (pipeline unificata, usa ingestion_engine)
 # ─────────────────────────────────────────────────────────────────
+
+
 
 @app.post("/upload/inspect")
 async def upload_inspect(file: UploadFile = File(...)):
+    """
+    Preview intelligente — stesso engine del vero import.
+    Ritorna: family, confidence, mapped fields, analisi disponibili/bloccate, YoY info.
+    Non importa nulla, solo analizza.
+    """
     contents = await file.read()
     try:
         mr = inspect_bytes(contents, file.filename)
@@ -235,6 +254,10 @@ async def upload_saving(
     cdc_override: Optional[str] = None,
     yoy_mode: bool = False,
 ):
+    """
+    Upload file saving/ordini.
+    Usa lo stesso engine di /upload/auto ma con compatibilità frontend.
+    """
     contents = await file.read()
     try:
         result = process_upload(
@@ -252,26 +275,24 @@ async def upload_saving(
         raise HTTPException(400, result.error or "File non riconoscibile come file saving/ordini.")
 
     return {
-        "status":              result.status,
-        "rows_inserted":       result.rows_inserted,
-        "rows_skipped":        result.rows_skipped,
-        "upload_id":           result.upload_id,
-        "sheet_used":          result.sheet_used,
-        "family":              result.family,
-        "family_label":        result.family_label,
-        "mapping_confidence":  result.mapping_confidence,
-        "mapping_score":       result.mapping_score,
-        "year_detected":       result.year_detected,
-        "years_found":         result.years_found,
-        "yoy_ready":           result.yoy_ready,
-        "available_analyses":  result.available_analyses,
-        "blocked_analyses":    result.blocked_analyses,
-        "warnings":            result.warnings,
+        "status":             result.status,
+        "rows_inserted":      result.rows_inserted,
+        "rows_skipped":       result.rows_skipped,
+        "upload_id":          result.upload_id,
+        "sheet_used":         result.sheet_used,
+        "family":             result.family,
+        "family_label":       result.family_label,
+        "mapping_confidence": result.mapping_confidence,
+        "mapping_score":      result.mapping_score,
+        "year_detected":      result.year_detected,
+        "years_found":        result.years_found,
+        "yoy_ready":          result.yoy_ready,
+        "available_analyses": result.available_analyses,
+        "blocked_analyses":   result.blocked_analyses,
+        "warnings":           result.warnings,
         "normalization_notes": result.normalization_notes,
     }
 
-
-# ── FIX PRINCIPALE: upload_auto con return aggiunto ──
 @app.post("/upload/auto")
 async def upload_auto(
     file: UploadFile = File(...),
@@ -282,6 +303,11 @@ async def upload_auto(
     """
     Endpoint upload unificato — classifica e importa automaticamente.
     Supporta: savings, risorse, non_conformita, tempi.
+    
+    Parametri:
+        cdc_override:   forza il CDC (solo per file saving)
+        yoy_mode:       True = importa tutti gli anni (per YoY)
+        forced_family:  override famiglia (es. 'risorse', 'savings')
     """
     contents = await file.read()
     try:
@@ -295,41 +321,27 @@ async def upload_auto(
         )
     except Exception as e:
         log.error(f"upload_auto unexpected error: {e}", exc_info=True)
+        raise HTTPException(400, "Impossibile analizzare il file. Verifica il formato Excel.")
+    except Exception as e:
+        log.error(f"inspect error: {e}", exc_info=True)
         raise HTTPException(400, "Impossibile analizzare il file. Verifica che sia un Excel valido (.xlsx/.xls).")
-
-    if result.status == "failed" and not result.upload_id:
-        raise HTTPException(400, result.error or "File non riconoscibile come file procurement.")
-
-    # ── FIX: return era mancante — causava risposta null al frontend ──
-    return {
-        "status":              result.status,
-        "rows_inserted":       result.rows_inserted,
-        "rows_skipped":        result.rows_skipped,
-        "upload_id":           result.upload_id,
-        "sheet_used":          result.sheet_used,
-        "family":              result.family,
-        "family_label":        result.family_label,
-        "mapping_confidence":  result.mapping_confidence,
-        "mapping_score":       result.mapping_score,
-        "year_detected":       result.year_detected,
-        "years_found":         result.years_found,
-        "yoy_ready":           result.yoy_ready,
-        "available_analyses":  result.available_analyses,
-        "blocked_analyses":    result.blocked_analyses,
-        "warnings":            result.warnings,
-        "normalization_notes": result.normalization_notes,
-    }
 
 
 @app.post("/upload/risorse")
 async def upload_risorse_compat(file: UploadFile = File(...)):
+    """Endpoint risorse — usa /upload/auto internamente."""
     contents = await file.read()
     try:
-        result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
+        result = process_upload(
+            file_bytes=contents,
+            filename=file.filename,
+            client=sb(),
+        )
     except Exception as e:
         raise HTTPException(500, "Errore interno. Controlla i log per i dettagli.")
-
+    
     if result.status == "failed" and not result.upload_id:
+        # Prova con forced_family='risorse' se classificato male
         if result.mapping_score >= 0.40:
             result = process_upload(
                 file_bytes=contents,
@@ -339,32 +351,34 @@ async def upload_risorse_compat(file: UploadFile = File(...)):
             )
         if result.status == "failed":
             raise HTTPException(400, result.error or "File risorse non riconoscibile")
-
+    
     return {
-        "status":             result.status,
-        "rows":               result.rows_inserted,
-        "family":             result.family,
-        "year_detected":      result.year_detected,
+        "status": result.status,
+        "rows": result.rows_inserted,
+        "family": result.family,
+        "year_detected": result.year_detected,
         "available_analyses": result.available_analyses,
-        "warnings":           result.warnings,
+        "warnings": result.warnings,
     }
 
 
 @app.post("/upload/tempi")
 async def upload_tempi_compat(file: UploadFile = File(...)):
+    """Endpoint tempi attraversamento — usa upload_engine."""
     contents = await file.read()
     try:
         result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
     except Exception as e:
         raise HTTPException(500, "Errore interno. Il file potrebbe non essere nel formato atteso.")
     if result.status == "failed" and not result.upload_id:
-        raise HTTPException(400, result.error or "File tempi attraversamento non riconoscibile.")
+        raise HTTPException(400, result.error or "File tempi attraversamento non riconoscibile. Verifica le colonne Year_Month, Total_Days, Days_Purchasing.")
     return {"status": result.status, "rows": result.rows_inserted,
             "family": result.family, "warnings": result.warnings}
 
 
 @app.post("/upload/nc")
 async def upload_nc_compat(file: UploadFile = File(...)):
+    """Endpoint non conformità — usa upload_engine."""
     contents = await file.read()
     try:
         result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
@@ -375,10 +389,6 @@ async def upload_nc_compat(file: UploadFile = File(...)):
     return {"status": result.status, "rows": result.rows_inserted,
             "family": result.family, "warnings": result.warnings}
 
-
-# ─────────────────────────────────────────────────────────────────
-# KPI SAVING
-# ─────────────────────────────────────────────────────────────────
 
 @app.get("/kpi/saving/anni")
 def get_anni():
@@ -401,6 +411,7 @@ def kpi_riepilogo(
         df = get_saving_df(anno, str_ric, cdc, alfa, macro,
             cols="imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,accred_albo,alfa_documento")
         return calc_kpi(df)
+
     except Exception as e:
         log.error(f"kpi_riepilogo error: {e}", exc_info=True)
         raise HTTPException(500, "Errore nel calcolo KPI. Verifica i dati caricati.")
@@ -685,7 +696,7 @@ def kpi_yoy_cdc(anno: int = Query(...)):
 
 
 # ─────────────────────────────────────────────────────────────────
-# RISORSE
+# RISORSE ANALYTICS
 # ─────────────────────────────────────────────────────────────────
 
 @app.get("/kpi/risorse/riepilogo")
@@ -693,7 +704,7 @@ def kpi_risorse():
     rows = query("resource_performance")
     df = pd.DataFrame(rows)
     if df.empty:
-        return {"available": False, "reason": "Nessun file risorse caricato."}
+        return {"available": False, "reason": "Nessun file risorse caricato. Vai in Carica Dati e importa il file team analytics."}
     n = len(df)
     risorse = df["risorsa"].dropna().nunique()
     avg_pratiche = df["pratiche_gestite"].dropna().mean()
@@ -856,7 +867,7 @@ def kpi_nc_tipo():
 
 
 # ─────────────────────────────────────────────────────────────────
-# FILTRI + EXPORT + UTILITY
+# FILTRI + EXPORT
 # ─────────────────────────────────────────────────────────────────
 
 @app.get("/kpi/saving/per-protocollo-commessa")
@@ -864,6 +875,7 @@ def kpi_per_protocollo_commessa(
     anno: Optional[int] = Query(None), str_ric: Optional[str] = Query(None),
     cdc: Optional[str] = Query(None), limit: int = Query(20)
 ):
+    """Analisi per protocollo commessa — ricerca."""
     df = get_saving_df(anno, str_ric, cdc,
         cols="protoc_commessa,prefisso_commessa,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,alfa_documento,accred_albo,ragione_sociale")
     if df.empty: return []
@@ -884,10 +896,12 @@ def kpi_per_protocollo_ordine(
     anno: Optional[int] = Query(None), str_ric: Optional[str] = Query(None),
     limit: int = Query(20)
 ):
+    """Analisi per protocollo ordine."""
     df = get_saving_df(anno, str_ric,
         cols="protoc_ordine,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,alfa_documento,accred_albo")
     if df.empty: return []
     df = df.dropna(subset=["protoc_ordine"])
+    # protoc_ordine è numerico
     df["protoc_ordine"] = df["protoc_ordine"].astype(str)
     result = []
     for prot, g in df.groupby("protoc_ordine"):
@@ -897,6 +911,11 @@ def kpi_per_protocollo_ordine(
 
 @app.get("/kpi/saving/concentration-index")
 def kpi_concentration(anno: Optional[int] = Query(None), str_ric: Optional[str] = Query(None)):
+    """
+    Indice di concentrazione fornitori:
+    - share top 5 / top 10 / top 20
+    - HHI (Herfindahl-Hirschman Index) semplificato
+    """
     df = get_saving_df(anno, str_ric, cols="ragione_sociale,imp_impegnato_eur")
     if df.empty: return {}
     total = float(df["imp_impegnato_eur"].fillna(0).sum())
@@ -906,6 +925,7 @@ def kpi_concentration(anno: Optional[int] = Query(None), str_ric: Optional[str] 
     grp["share"] = (grp["imp_impegnato_eur"] / total * 100).round(2)
     n = len(grp)
     def cumshare(k): return round(float(grp.head(k)["share"].sum()), 2) if k <= n else 100.0
+    # HHI semplificato (somma quadrati delle share in %)
     hhi = round(float((grp["share"] ** 2).sum()), 1)
     return {
         "n_fornitori_totali": n,
@@ -925,6 +945,7 @@ def kpi_concentration(anno: Optional[int] = Query(None), str_ric: Optional[str] 
 
 @app.get("/kpi/saving/per-buyer-cdc")
 def kpi_per_buyer_cdc(anno: Optional[int] = Query(None)):
+    """Matrice saving per buyer × CDC."""
     df = get_saving_df(anno,
         cols="utente_presentazione,utente,cdc,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,accred_albo,alfa_documento")
     if df.empty: return []
@@ -936,6 +957,7 @@ def kpi_per_buyer_cdc(anno: Optional[int] = Query(None)):
         k = calc_kpi(g)
         result.append({"buyer": buyer, "cdc": cdc_v, **k})
     return sorted(result, key=lambda x: x["saving"], reverse=True)
+
 
 @app.get("/filtri/disponibili")
 def filtri_disponibili(anno: Optional[int] = Query(None)):
@@ -1000,6 +1022,7 @@ def upload_log():
     rows = sb().table("upload_log").select("*").order("upload_date", desc=True).limit(50).execute().data
     if not isinstance(rows, list):
         return []
+    # Garantisce che i campi JSONB siano sempre array (mai stringhe)
     import json as _json
     def _safe_list(v):
         if isinstance(v, list): return v
@@ -1020,7 +1043,7 @@ def delete_upload(upload_id: str):
 
 @app.get("/wake")
 def wake():
-    return {"ok": True, "version": "9.1.0"}
+    return {"ok": True, "version": "9.0.0"}
 
 @app.get("/health")
 def health():
@@ -1032,6 +1055,11 @@ def health():
         db_ok = False
     return {
         "status": "ok" if db_ok else "degraded",
-        "version": "9.1.0",
+        "version": "9.0.0",
         "database": "reachable" if db_ok else "unreachable",
+        "kpi_definitions": {
+            "listino":   "imp_listino_eur  = Imp. Iniziale €",
+            "impegnato": "imp_impegnato_eur = Imp. Negoziato €",
+            "saving":    "saving_eur = Saving.1",
+        },
     }
