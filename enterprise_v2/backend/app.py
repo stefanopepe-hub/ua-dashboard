@@ -4,8 +4,8 @@ import tempfile
 import os
 
 from import_inspector import inspect_columns
-from excel_reader import read_excel_columns
 from workbook_reader import list_workbook_sheets
+from best_sheet_selector import select_best_sheet
 
 app = FastAPI(title="Telethon Enterprise V2 API")
 
@@ -35,10 +35,10 @@ async def inspect_excel(file: UploadFile = File(...)):
 
     try:
         sheets = list_workbook_sheets(temp_path)
-        columns = read_excel_columns(temp_path)
-        result = inspect_columns(columns)
+        best_sheet, result = select_best_sheet(temp_path, sheets)
         result["file_name"] = file.filename
         result["sheet_names"] = sheets
+        result["selected_sheet"] = best_sheet
         return result
     finally:
         if os.path.exists(temp_path):
