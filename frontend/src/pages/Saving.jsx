@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import {
   BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend, Cell,
+  ResponsiveContainer, Legend, Cell, ComposedChart, Area,
 } from 'recharts'
 import { useKpi } from '../hooks/useKpi'
 import { useAnni } from '../hooks/useAnni'
@@ -58,6 +58,14 @@ export default function Saving() {
     () => ready ? api.valute({ anno }) : Promise.resolve([]),
     [anno]
   )
+  const { data: pareto, loading: lPareto } = useKpi(
+    () => ready ? api.pareto({ anno, str_ric: strRic }) : Promise.resolve([]),
+    [anno, strRic]
+  )
+  const { data: concentration, loading: lConc } = useKpi(
+    () => ready ? api.concentration({ anno, str_ric: strRic }) : Promise.resolve({}),
+    [anno, strRic]
+  )
 
   const hl    = yoy?.kpi_headline || {}
   const kc    = hl.corrente   || {}
@@ -98,6 +106,9 @@ export default function Saving() {
           (delta.perc_saving != null ? ` (${delta.perc_saving >= 0 ? '+' : ''}${delta.perc_saving.toFixed(1)} pp).` : '.')
         : '.')
     : ''
+
+  const savingOnListino = kc.listino ? (kc.saving / kc.listino) * 100 : null
+  const impegnatoOnListino = kc.listino ? (kc.impegnato / kc.listino) * 100 : null
 
   return (
     <div className="space-y-6">
@@ -167,6 +178,12 @@ export default function Saving() {
             <KpiCard label="% Negoziati" value={fmtPct(kc.perc_negoziati)}
               sub={<DeltaBadge value={delta.perc_negoziati} suffix=" pp" label={`vs ${ap}`} />} />
             <KpiCard label="% Albo" value={fmtPct(kc.perc_albo)} sub={`${fmtNum(kc.n_albo)} accreditati`} />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <KpiCard label="Saving/Listino" value={fmtPct(savingOnListino)} sub="efficienza economica" color="green" />
+            <KpiCard label="Impegnato/Listino" value={fmtPct(impegnatoOnListino)} sub="copertura spend" color="blue" />
+            <KpiCard label="Quota Top 5" value={fmtPct(concentration?.share_top_5)} sub="concentrazione fornitori" color="orange" />
+            <KpiCard label="HHI Fornitori" value={fmtNum(concentration?.hhi)} sub={concentration?.hhi_interpretation || 'indice concentrazione'} color="gray" />
           </div>
         </div>
       )}
@@ -304,6 +321,33 @@ export default function Saving() {
             </table>
           )}
         </div>
+      </div>
+
+      {/* Pareto fornitori */}
+      <div className="card">
+        <SectionTitle>Pareto Fornitori — {anno}</SectionTitle>
+        {lPareto ? <LoadingBox /> : (pareto || []).length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-8">Nessun dato</p>
+        ) : (
+          <ResponsiveContainer width="100%" height={260}>
+            <ComposedChart data={(pareto || []).slice(0, 20)} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+              <XAxis dataKey="rank" tick={{ fontSize: 11 }} />
+              <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
+              <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 11 }} />
+              <Tooltip
+                formatter={(value, name) => {
+                  if (name === 'Impegnato') return [fmtEur(value), name]
+                  if (name === 'Cumulata') return [`${Number(value).toFixed(2)}%`, name]
+                  return [value, name]
+                }}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Bar yAxisId="left" dataKey="imp_impegnato_eur" name="Impegnato" fill={COLORS.blue} radius={[3, 3, 0, 0]} />
+              <Area yAxisId="right" type="monotone" dataKey="cum_perc" name="Cumulata" stroke={COLORS.orange} fill="#fed7aa" />
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
       </div>
 
       {/* Categorie + Valute */}
