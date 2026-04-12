@@ -1,0 +1,58 @@
+{
+  "summary": {
+    "team_size": 8,
+    "documents_handled": 12450,
+    "active_cases": 184,
+    "closed_cases": 12266,
+    "saving_generated": 2140000,
+    "avg_cycle_time_days": 12.4
+  },
+  "resources": [
+    {
+      "resource_name": "Monti L.",
+      "documents_handled": 2450,
+      "saving_generated": 520000,
+      "backlog": 28
+    },
+    {
+      "resource_name": "Scialanga",
+      "documents_handled": 2210,
+      "saving_generated": 430000,
+      "backlog": 23
+    },
+    {
+      "resource_name": "Ruotolo",
+      "documents_handled": 1940,
+      "saving_generated": 385000,
+      "backlog": 19
+    },
+    {
+      "resource_name": "Marina P.",
+      "documents_handled": 1670,
+      "saving_generated": 310000,
+      "backlog": 21
+    }
+  ],
+  "monthly_trend": [
+    {
+      "month": "2026-01",
+      "documents_handled": 980,
+      "saving_generated": 140000
+    },
+    {
+      "month": "2026-02",
+      "documents_handled": 1020,
+      "saving_generated": 162000
+    },
+    {
+      "month": "2026-03",
+      "documents_handled": 1088,
+      "saving_generated": 171000
+    },
+    {
+      "month": "2026-04",
+      "documents_handled": 1112,
+      "saving_generated": 182000
+    }
+  ]
+}

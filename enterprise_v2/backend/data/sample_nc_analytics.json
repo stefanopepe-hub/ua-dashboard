@@ -1,0 +1,54 @@
+{
+  "summary": {
+    "records": 8531,
+    "open_cases": 214,
+    "closed_cases": 8317,
+    "avg_closure_days": 9.7
+  },
+  "top_suppliers": [
+    {
+      "supplier_name": "Supplier A",
+      "nc_count": 41
+    },
+    {
+      "supplier_name": "Supplier B",
+      "nc_count": 35
+    },
+    {
+      "supplier_name": "Supplier C",
+      "nc_count": 29
+    }
+  ],
+  "types": [
+    {
+      "type": "Qualità",
+      "count": 302
+    },
+    {
+      "type": "Consegna",
+      "count": 271
+    },
+    {
+      "type": "Documentale",
+      "count": 118
+    }
+  ],
+  "monthly_trend": [
+    {
+      "month": "2025-01",
+      "count": 51
+    },
+    {
+      "month": "2025-02",
+      "count": 47
+    },
+    {
+      "month": "2025-03",
+      "count": 56
+    },
+    {
+      "month": "2025-04",
+      "count": 49
+    }
+  ]
+}
