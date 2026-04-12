@@ -247,6 +247,24 @@ def kpi_concentration(client, anno=None, str_ric=None) -> dict:
     }
 
 
+def kpi_executive_summary(client, anno=None, str_ric=None, cdc=None) -> dict:
+    """Sintesi executive con KPI economici + rischio concentrazione fornitori."""
+    kpi = kpi_riepilogo(client, anno, str_ric, cdc)
+    conc = kpi_concentration(client, anno, str_ric)
+    listino = float(kpi.get("listino", 0) or 0)
+    impegnato = float(kpi.get("impegnato", 0) or 0)
+    saving = float(kpi.get("saving", 0) or 0)
+    return {
+        **kpi,
+        "saving_on_listino_pct": round((saving / listino) * 100, 2) if listino else None,
+        "impegnato_on_listino_pct": round((impegnato / listino) * 100, 2) if listino else None,
+        "supplier_hhi": conc.get("hhi"),
+        "supplier_top5_share_pct": conc.get("share_top_5"),
+        "supplier_top10_share_pct": conc.get("share_top_10"),
+        "supplier_concentration_note": conc.get("hhi_interpretation"),
+    }
+
+
 def kpi_valute(client, anno=None) -> list:
     df = get_saving_df(client, anno, cols="valuta,imp_listino_eur,imp_impegnato_eur")
     if df.empty: return []
@@ -272,8 +290,16 @@ def kpi_yoy(
     df_c = get_saving_df(client, anno, str_ric, cdc, cols=cols)
     df_p = get_saving_df(client, ap,   str_ric, cdc, cols=cols)
 
-    if not df_c.empty: df_c["mn"] = df_c["data_doc"].dt.month
-    if not df_p.empty: df_p["mn"] = df_p["data_doc"].dt.month
+    if not df_c.empty:
+        df_c["mn"] = df_c["data_doc"].dt.month
+        df_c = df_c.dropna(subset=["mn"])
+        if not df_c.empty:
+            df_c["mn"] = df_c["mn"].astype(int)
+    if not df_p.empty:
+        df_p["mn"] = df_p["data_doc"].dt.month
+        df_p = df_p.dropna(subset=["mn"])
+        if not df_p.empty:
+            df_p["mn"] = df_p["mn"].astype(int)
 
     mese_max = int(df_c["mn"].max()) if not df_c.empty else 0
     ult_giorno = int(df_c[df_c["mn"] == mese_max]["data_doc"].dt.day.max()) if mese_max and not df_c.empty else 0
