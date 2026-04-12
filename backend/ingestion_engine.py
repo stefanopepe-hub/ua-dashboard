@@ -258,7 +258,7 @@ SYNONYMS: Dict[str, List[str]] = {
     'non_conformita': [
         'non conformità', 'non conformita', 'non_conformita', 'nc', 'nonconformity',
         'non-conformity', 'difformità', 'anomalia',
-    ],
+          ],
     'data_origine': [
         'data origine', 'origin date', 'data_origine', 'nc date', 'data nc',
         'data segnalazione',
@@ -518,7 +518,7 @@ def detect_header_row(df_raw: pd.DataFrame, max_scan: int = 10) -> int:
 
 def _is_pure_number(s: str) -> bool:
     try:
-        float(s.replace(',', '.').replace(' ', ''))
+              float(s.replace(',', '.').replace(' ', ''))
         return True
     except ValueError:
         return False
@@ -778,7 +778,7 @@ FAMILY_SIGNALS: Dict[FileFamily, Dict[str, float]] = {
         'non_conformita':  4.0,
         'data_origine':    2.5,
         'delta_giorni':    2.5,
-        'tipo_origine':    2.0,
+              'tipo_origine':    2.0,
         'ragione_sociale': 1.0,
     },
     FileFamily.TEMPI: {
@@ -851,6 +851,25 @@ def classify_file_family(
     for fam, s in scores.items():
         ms = max_scores.get(fam, 1)
         norm_scores[fam] = round(s / ms, 3) if ms else 0
+
+    # Disambiguazione RISORSE vs TEMPI:
+    # alcuni file risorse usano colonne "buyer/period" e possono sembrare tempi.
+    has_risorsa_identity = bool(col_map.get("risorsa") or col_map.get("utente_pres"))
+    has_risorsa_metrics = any(
+        col_map.get(k) for k in [
+            "pratiche_gestite", "pratiche_aperte", "pratiche_chiuse",
+            "saving_generato", "negoziazioni_concluse", "tempo_medio_risorsa",
+        ]
+    )
+    has_tempi_core = any(col_map.get(k) for k in ["days_purchasing", "days_auto", "total_days"])
+    if has_risorsa_identity and has_risorsa_metrics:
+        norm_scores[FileFamily.RISORSE.value] = round(
+            min(1.0, norm_scores.get(FileFamily.RISORSE.value, 0) + 0.18), 3
+        )
+        if not has_tempi_core:
+            norm_scores[FileFamily.TEMPI.value] = round(
+                max(0.0, norm_scores.get(FileFamily.TEMPI.value, 0) - 0.10), 3
+            )
 
     best_fam_str = max(norm_scores, key=norm_scores.get)
     best_fam = FileFamily(best_fam_str)
@@ -1019,7 +1038,7 @@ def inspect_workbook(
     Parametri:
         xl:          pd.ExcelFile già aperto
         user_sheet:  nome foglio specificato dall'utente (opzionale)
-    """
+            """
     # 1. Seleziona il foglio migliore
     sheet = _select_best_sheet(xl, user_sheet)
 
@@ -1108,22 +1127,29 @@ def _select_best_sheet(xl: pd.ExcelFile, preferred: Optional[str] = None) -> str
     if len(xl.sheet_names) == 1:
         return xl.sheet_names[0]
 
-    best, best_score = xl.sheet_names[0], -1
+    best, best_score = xl.sheet_names[0], -1.0
     for s in xl.sheet_names:
         try:
-            # nrows=100: abbastanza per il mapping, molto più veloce del full read
-            df = pd.read_excel(xl, sheet_name=s, nrows=100)
+            # nrows=15 per trovare la riga header, poi sample (100) per mapping.
+            # Questo evita penalizzazioni su fogli con preamboli/testate multi-riga.
+            df_raw = pd.read_excel(xl, sheet_name=s, header=None, nrows=15)
+            header_row = detect_header_row(df_raw)
+            df = pd.read_excel(xl, sheet_name=s, header=header_row, nrows=100)
             df.columns = [str(c).strip() for c in df.columns]
             # Filtra colonne Unnamed
             df = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
             col = build_column_map(df)
-            # Score = colonne riconosciute * 100 + stima righe (da metadati, non full read)
-            # Stima righe: usa la dimensione del campione come proxy
-            score = len(col) * 100 + len(df)
+
+            # Priorità: colonne riconosciute; tie-breaker: colonne utili, poi righe campione.
+            recognized = len(col)
+            useful_cols = len(df.columns)
+            sampled_rows = len(df)
+            score = recognized * 1000 + useful_cols * 10 + sampled_rows
             if score > best_score:
                 best_score, best = score, s
         except Exception:
-            pass
+            # Ignora fogli corrotti o non tabellari e continua la selezione.
+            continue
     return best
 
 
