@@ -62,7 +62,7 @@ export default function Saving() {
     () => ready ? api.pareto({ anno, str_ric: strRic }) : Promise.resolve([]),
     [anno, strRic]
   )
-  const { data: concentration, loading: lConc } = useKpi(
+  const { data: concentration } = useKpi(
     () => ready ? api.concentration({ anno, str_ric: strRic }) : Promise.resolve({}),
     [anno, strRic]
   )
