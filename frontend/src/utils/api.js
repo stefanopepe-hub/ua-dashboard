@@ -131,7 +131,7 @@ export const api = {
   return data
 },
 
-  uploadTempi: async (file) => {
+uploadTempi: async (file) => {
   const fd = new FormData()
   fd.append('file', file)
   const r = await fetch(`${BASE}/upload/tempi`, { method: 'POST', body: fd })
@@ -140,7 +140,7 @@ export const api = {
   return data
 },
 
-  uploadNc: async (file) => {
+uploadNc: async (file) => {
   const fd = new FormData()
   fd.append('file', file)
   const r = await fetch(`${BASE}/upload/nc`, { method: 'POST', body: fd })
