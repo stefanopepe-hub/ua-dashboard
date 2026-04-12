@@ -23,6 +23,28 @@ router = APIRouter(prefix="/upload", tags=["upload"])
 
 def sb():
     return create_client(
+
+
+ALLOWED_BY_TARGET = {
+    "saving": {"savings", "saving", "orders_detail", "orders", "detailed_orders"},
+    "risorse": {"resources", "risorse", "team", "orders_detail", "orders", "detailed_orders"},
+    "tempi": {"tempi", "cycle_times", "tempo_attraversamento", "orders_detail", "orders", "detailed_orders"},
+    "nc": {"nc", "non_conformities", "non_conformita"},
+}
+
+def _normalize_family(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+def _is_family_allowed(target: str, family: str | None) -> bool:
+    fam = _normalize_family(family)
+    return fam in ALLOWED_BY_TARGET.get(target, set())
+
+def _contextual_response(result, target: str):
+    payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+    payload["target_domain"] = target
+    payload["family_allowed_for_target"] = _is_family_allowed(target, getattr(result, "family", None))
+    return payload
+
         os.getenv("SUPABASE_URL", ""),
         os.getenv("SUPABASE_SERVICE_KEY", "")
     )
@@ -106,86 +128,102 @@ async def upload_saving(
 
 @router.post("/risorse")
 async def upload_risorse(file: UploadFile = File(...)):
-    """Upload file risorse/team."""
+    """Upload file per analisi Risorse/Operatività.
+    Accetta sia file resources puri sia orders_detail, che verranno interpretati nel dominio Risorse.
+    """
     contents = await file.read()
     try:
-        result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
+        result = process_upload(
+            file_bytes=contents,
+            filename=file.filename,
+            client=sb(),
+            forced_family="risorse",
+        )
     except Exception as e:
         log.error(f"upload_risorse error {file.filename}: {e}", exc_info=True)
-        raise HTTPException(500, "Errore durante l'elaborazione del file.")
+        raise HTTPException(500, "Errore durante l'elaborazione del file risorse.")
 
-    detected = (result.family or "").strip().lower()
-
-    # accetta solo famiglie realmente risorse/team
-    allowed = {"risorse", "resources", "team", "resource_performance"}
-
-    if detected not in allowed:
-        raise HTTPException(
-            400,
-            f"Questo file non appartiene al dominio Risorse/Team. "
-            f"Famiglia rilevata: {result.family_label or result.family or 'sconosciuta'}."
-        )
+    if result.status == "failed" and not result.upload_id:
+        # fallback: alcuni file dettagliati ordini devono poter alimentare Risorse
+        try:
+            result = process_upload(
+                file_bytes=contents,
+                filename=file.filename,
+                client=sb(),
+                forced_family="orders_detail",
+                target_domain="risorse",
+            )
+        except TypeError:
+            # compatibilità con versioni di process_upload senza target_domain
+            pass
 
     if result.status == "failed" and not result.upload_id:
         raise HTTPException(
             400,
             result.error or
-            "File non riconoscibile come file risorse. "
-            "Verifica che contenga: Risorsa, Mese, Pratiche Gestite."
+            "Il file non è compatibile con il dominio Risorse. "
+            "Carica un file team dedicato oppure un file ordini dettagliati compatibile."
         )
 
-    return result.to_dict()
+    return _contextual_response(result, "risorse")
+
 
 @router.post("/tempi")
 async def upload_tempi(file: UploadFile = File(...)):
-    """Upload file tempi attraversamento."""
+    """Upload file per analisi Tempi Attraversamento."""
     contents = await file.read()
     try:
-        result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
+        result = process_upload(
+            file_bytes=contents,
+            filename=file.filename,
+            client=sb(),
+            forced_family="tempi",
+        )
     except Exception as e:
         log.error(f"upload_tempi error {file.filename}: {e}", exc_info=True)
-        raise HTTPException(500, "Errore durante l'elaborazione del file.")
-
-    detected = (result.family or "").strip().lower()
-    allowed = {"tempi", "cycle_times", "tempo_attraversamento"}
-
-    if detected not in allowed:
-        raise HTTPException(
-            400,
-            f"Questo file non appartiene al dominio Tempi Attraversamento. "
-            f"Famiglia rilevata: {result.family_label or result.family or 'sconosciuta'}."
-        )
+        raise HTTPException(500, "Errore durante l'elaborazione del file tempi.")
 
     if result.status == "failed" and not result.upload_id:
-        raise HTTPException(400, result.error or "File tempi non riconoscibile.")
+        try:
+            result = process_upload(
+                file_bytes=contents,
+                filename=file.filename,
+                client=sb(),
+                forced_family="orders_detail",
+                target_domain="tempi",
+            )
+        except TypeError:
+            pass
 
-    return result.to_dict()
+    if result.status == "failed" and not result.upload_id:
+        raise HTTPException(
+            400,
+            result.error or
+            "Il file non è compatibile con il dominio Tempi Attraversamento."
+        )
+
+    return _contextual_response(result, "tempi")
 
 
 @router.post("/nc")
 async def upload_nc(file: UploadFile = File(...)):
-    """Upload file non conformità."""
+    """Upload file per analisi Non Conformità."""
     contents = await file.read()
     try:
-        result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
+        result = process_upload(
+            file_bytes=contents,
+            filename=file.filename,
+            client=sb(),
+            forced_family="nc",
+        )
     except Exception as e:
         log.error(f"upload_nc error {file.filename}: {e}", exc_info=True)
-        raise HTTPException(500, "Errore durante l'elaborazione del file.")
-
-    detected = (result.family or "").strip().lower()
-    allowed = {"nc", "non_conformities", "non_conformita"}
-
-    if detected not in allowed:
-        raise HTTPException(
-            400,
-            f"Questo file non appartiene al dominio Non Conformità. "
-            f"Famiglia rilevata: {result.family_label or result.family or 'sconosciuta'}."
-        )
+        raise HTTPException(500, "Errore durante l'elaborazione del file NC.")
 
     if result.status == "failed" and not result.upload_id:
-        raise HTTPException(400, result.error or "File NC non riconoscibile.")
+        raise HTTPException(400, result.error or "Il file non è compatibile con il dominio NC.")
 
-    return result.to_dict()
+    return _contextual_response(result, "nc")
 
 
 @router.get("/log")
