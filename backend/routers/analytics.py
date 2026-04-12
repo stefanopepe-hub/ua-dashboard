@@ -12,7 +12,7 @@ from services.analytics import (
     get_anni, kpi_riepilogo, kpi_mensile, kpi_mensile_area,
     kpi_per_cdc, kpi_per_buyer, kpi_per_alfa, kpi_per_macro,
     kpi_per_commessa, kpi_top_fornitori, kpi_pareto,
-    kpi_concentration, kpi_valute, kpi_yoy, kpi_yoy_cdc,
+    kpi_concentration, kpi_executive_summary, kpi_valute, kpi_yoy, kpi_yoy_cdc,
     kpi_per_protocollo_commessa, kpi_per_protocollo_ordine, kpi_per_buyer_cdc,
     query, safe_pct,
 )
@@ -86,6 +86,14 @@ def api_pareto(anno: Optional[int] = Query(None), str_ric: Optional[str] = Query
 @router.get("/saving/concentration-index")
 def api_concentration(anno: Optional[int] = Query(None), str_ric: Optional[str] = Query(None)):
     return kpi_concentration(sb(), anno, str_ric)
+
+@router.get("/saving/executive-summary")
+def api_executive_summary(
+    anno: Optional[int] = Query(None),
+    str_ric: Optional[str] = Query(None),
+    cdc: Optional[str] = Query(None),
+):
+    return kpi_executive_summary(sb(), anno, str_ric, cdc)
 
 @router.get("/saving/valute")
 def api_valute(anno: Optional[int] = Query(None)):
