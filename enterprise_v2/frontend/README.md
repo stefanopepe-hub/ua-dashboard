@@ -1,11 +1,12 @@
 # Frontend Enterprise V2
 
-## Stato batch 4
+## Stato batch 5
 - Upload & Inspect
 - Saving Dashboard
 - Resources page
 - Cycle Times page
 - Non-Conformities page
+- Deploy Readiness page
 
-## Obiettivo
-Estendere gradualmente la nuova piattaforma enterprise senza toccare l'app attuale.
+## Deploy
+Configurare VITE_API_BASE_URL nel servizio Render frontend.
