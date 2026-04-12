@@ -258,7 +258,7 @@ async def upload_saving(
         "status":              result.status,
         "rows_inserted":       result.rows_inserted,
         "rows_skipped":        result.rows_skipped,
-        "upload_id":           result.upload_id,
+          "upload_id":           result.upload_id,
         "sheet_used":          result.sheet_used,
         "family":              result.family,
         "family_label":        result.family_label,
@@ -513,32 +513,20 @@ def kpi_per_commessa(
     anno: Optional[int] = Query(None), cdc: Optional[str] = Query(None),
     limit: int = Query(20)
 ):
-    df = get_saving_df(
-        anno,
-        "RICERCA",
-        cdc,
-        cols=(
-            "prefisso_commessa,desc_commessa,imp_listino_eur,"
-            "imp_impegnato_eur,saving_eur,negoziazione,accred_albo,alfa_documento"
-        ),
-    )
+    df = get_saving_df(anno, "RICERCA", cdc,
+        cols="prefisso_commessa,desc_commessa,imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,accred_albo,alfa_documento")
     if df.empty:
         return []
-
     df = df.dropna(subset=["prefisso_commessa"])
     result = []
-
     for pref, g in df.groupby("prefisso_commessa"):
         k = calc_kpi(g)
         desc = g["desc_commessa"].dropna().mode()
-        result.append(
-            {
-                "prefisso_commessa": pref,
-                "desc_commessa": desc.iloc[0] if not desc.empty else "-",
-                **k,
-            }
-        )
-
+        result.append({
+            "prefisso_commessa": pref,
+            "desc_commessa": desc.iloc[0] if not desc.empty else "—",
+            **k,
+        })
     return sorted(result, key=lambda x: x["saving"], reverse=True)[:limit]
 
 @app.get("/kpi/saving/per-categoria")
@@ -795,7 +783,7 @@ def kpi_risorse_per_risorsa(anno: Optional[int] = Query(None)):
     result = []
     for risorsa, g in df.groupby("risorsa"):
         result.append({
-            "risorsa": risorsa,
+                      "risorsa": risorsa,
             "struttura": g["struttura"].dropna().mode().iloc[0] if not g["struttura"].dropna().empty else None,
             "pratiche_gestite":      int(g["pratiche_gestite"].sum()),
             "pratiche_aperte":       int(g["pratiche_aperte"].sum()),
