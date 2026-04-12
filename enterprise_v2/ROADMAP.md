@@ -16,9 +16,10 @@
 
 ## Fase 3
 - analytics saving / ordini
-- analytics fornitori
-- analytics tipologie documentali
-- analytics CDC / buyer / protocolli
+- dashboard frontend saving
+- tipologie documentali
+- CDC / buyer / protocolli
+- preparazione YoY
 
 ## Fase 4
 - analytics risorse
