@@ -16,6 +16,7 @@ import io
 import sys
 import pytest
 import pandas as pd
+from pathlib import Path
 
 sys.path.insert(0, '/home/claude/ua-dashboard/backend')
 
@@ -31,6 +32,13 @@ from ingestion_engine import (
 )
 
 SAVING_FILE = '/mnt/user-data/uploads/file_saving_2025_final.xlsx'
+
+
+def _require_sample_file(path: str) -> Path:
+    sample = Path(path)
+    if not sample.exists():
+        pytest.skip(f"Sample file not available in this environment: {path}")
+    return sample
 
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -61,7 +69,8 @@ def make_excel_with_title(df: pd.DataFrame) -> bytes:
 
 @pytest.fixture(scope='module')
 def saving_bytes():
-    return open(SAVING_FILE, 'rb').read()
+    sample = _require_sample_file(SAVING_FILE)
+    return sample.read_bytes()
 
 @pytest.fixture(scope='module')
 def saving_wbi(saving_bytes):
@@ -485,6 +494,25 @@ def test_normalize_risorse_english(df_risorse_english):
     assert rec['pratiche_gestite'] == 45
     assert rec['saving_generato'] == pytest.approx(120000.0)
     assert rec['negoziazioni_concluse'] == 15
+
+def test_normalize_risorse_month_parsing_variants():
+    df = pd.DataFrame({
+        'Risorsa': ['A', 'B', 'C'],
+        'Mese': ['03/2025', 'Apr 2025', '2025-13'],
+        'Struttura': ['GD', 'GD', 'GD'],
+        'Pratiche Gestite': [1, 2, 3],
+    })
+    b = make_excel(df, 'Risorse')
+    wbi = inspect_and_load(b, 'risorse_variants.xlsx')
+    col_map = wbi.mapping_result.fields
+
+    r0 = normalize_risorse_row(col_map, wbi.df.iloc[0], 'test-id')
+    r1 = normalize_risorse_row(col_map, wbi.df.iloc[1], 'test-id')
+    r2 = normalize_risorse_row(col_map, wbi.df.iloc[2], 'test-id')
+
+    assert (r0['year'], r0['month'], r0['quarter']) == (2025, 3, 1)
+    assert (r1['year'], r1['month'], r1['quarter']) == (2025, 4, 2)
+    assert (r2['year'], r2['month'], r2['quarter']) == (None, None, None)
 
 def test_normalize_nc_row(df_nc):
     b = make_excel(df_nc)
