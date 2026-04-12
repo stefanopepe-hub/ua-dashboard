@@ -174,7 +174,11 @@ export default function DataQuality() {
   // FIX: garantisce sempre array
   const uploads = Array.isArray(logData) ? logData : []
   const saving  = uploads.filter(u => u.tipo === 'savings' || u.tipo === 'saving')
-  const risorse = uploads.filter(u => u.tipo === 'risorse')
+  const risorse = uploads.filter(
+  u =>
+    u.tipo === 'risorse' ||
+    u.target_domain === 'risorse'
+)
   const nc      = uploads.filter(u => u.tipo === 'nc' || u.tipo === 'non_conformita')
   const tempi   = uploads.filter(u => u.tipo === 'tempi')
 
