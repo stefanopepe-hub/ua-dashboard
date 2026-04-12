@@ -5,6 +5,7 @@ Testa: file family classification, column mapping 7-layer, confidence scoring.
 import pytest
 import pandas as pd
 import sys
+from pathlib import Path
 sys.path.insert(0, '/home/claude/ua-dashboard/backend')
 
 from ingestion_engine import (
@@ -17,13 +18,21 @@ from ingestion_engine import (
 
 SAVING_FILE = '/mnt/user-data/uploads/file_saving_2025_final.xlsx'
 
+
+def _require_sample_file(path: str) -> Path:
+    sample = Path(path)
+    if not sample.exists():
+        pytest.skip(f"Sample file not available in this environment: {path}")
+    return sample
+
 # ══════════════════════════════════════════════════════════════════
 # FIXTURES
 # ══════════════════════════════════════════════════════════════════
 
 @pytest.fixture(scope="module")
 def saving_xl():
-    return pd.ExcelFile(SAVING_FILE)
+    sample = _require_sample_file(SAVING_FILE)
+    return pd.ExcelFile(sample)
 
 @pytest.fixture(scope="module")
 def saving_mr(saving_xl):
@@ -48,6 +57,20 @@ def risorse_df():
         'Saving Generato':     [120000.0, 95000.0, 180000.0],
         'Negoziazioni Concluse': [15, 12, 20],
         'Tempo Medio':         [8.2, 6.5, 7.1],
+    })
+
+@pytest.fixture
+def risorse_buyer_period_df():
+    """Formato risorse frequente in export utente: Buyer + Period."""
+    return pd.DataFrame({
+        'Buyer': ['Marina P.', 'Silvana R.'],
+        'Period': ['2025-01', '2025-02'],
+        'Cases Managed': [22, 18],
+        'Open Cases': [4, 2],
+        'Closed Cases': [18, 16],
+        'Savings Generated': [35000.0, 29000.0],
+        'Negotiations': [7, 5],
+        'Avg Days': [6.2, 7.1],
     })
 
 @pytest.fixture
@@ -292,6 +315,12 @@ def test_classify_risorse(risorse_df):
     assert family == FileFamily.RISORSE
     assert conf >= 0.60
 
+def test_classify_risorse_buyer_period(risorse_buyer_period_df):
+    col_map = build_column_map(risorse_buyer_period_df)
+    family, conf, _ = classify_file_family(col_map, 'Team Workload')
+    assert family == FileFamily.RISORSE
+    assert conf >= 0.50
+
 def test_classify_tempi(tempi_df):
     col_map = build_column_map(tempi_df)
     family, conf, scores = classify_file_family(col_map, 'Tempi')
@@ -507,4 +536,3 @@ def test_multi_year_file():
     family, conf, _ = classify_file_family(col_map, 'saving 2026')
     assert family == FileFamily.SAVINGS
     assert conf >= 0.60  # valore aggiornato dopo estensione FAMILY_SIGNALS
-
