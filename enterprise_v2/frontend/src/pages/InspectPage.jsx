@@ -1,5 +1,7 @@
 import { useState } from "react";
 import Section from "../components/Section.jsx";
+import DataTable from "../components/DataTable.jsx";
+import KpiCard from "../components/KpiCard.jsx";
 import { API_BASE } from "../config.js";
 
 export default function InspectPage() {
@@ -43,39 +45,45 @@ export default function InspectPage() {
 
   return (
     <>
-      <Section title="Health Check">
-        <button onClick={checkHealth}>Verifica backend</button>
-        {health && <pre style={{ marginTop: 12 }}>{JSON.stringify(health, null, 2)}</pre>}
-      </Section>
-
-      <Section title="Inspect Excel">
-        <input type="file" accept=".xlsx,.xls" onChange={handleFile} />
+      <Section title="Upload & Inspect" subtitle="Carica un file Excel e verifica famiglia, foglio selezionato, mapping e readiness">
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+          <button onClick={checkHealth} style={{ padding: "10px 14px", borderRadius: 10, cursor: "pointer" }}>
+            Verifica backend
+          </button>
+          <input type="file" accept=".xlsx,.xls" onChange={handleFile} />
+        </div>
+        {health && <pre style={{ background: "#f8fafc", padding: 12, borderRadius: 12 }}>{JSON.stringify(health, null, 2)}</pre>}
         {loading && <p>Ispezione file in corso...</p>}
         {error && <p style={{ color: "crimson" }}>{error}</p>}
       </Section>
 
       {inspection && (
         <>
-          <Section title="Riepilogo ispezione">
-            <pre>{JSON.stringify({
-              file_name: inspection.file_name,
-              file_family: inspection.file_family,
-              confidence_score: inspection.confidence_score,
-              selected_sheet: inspection.selected_sheet,
-              selected_header_row: inspection.selected_header_row
-            }, null, 2)}</pre>
-          </Section>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 16, marginBottom: 18 }}>
+            <KpiCard title="Famiglia file" value={inspection.file_family || "-"} subtitle="Classifier" accent="#2563eb" />
+            <KpiCard title="Confidence" value={inspection.confidence_score ?? "-"} subtitle="0 - 1" accent="#16a34a" />
+            <KpiCard title="Foglio" value={inspection.selected_sheet || "-"} subtitle="Best sheet" accent="#7c3aed" />
+            <KpiCard title="Header row" value={inspection.selected_header_row ?? "-"} subtitle="Detected header" accent="#ea580c" />
+          </div>
 
           <Section title="Campi mappati">
-            <pre>{JSON.stringify(inspection.mapped_fields || {}, null, 2)}</pre>
+            <DataTable
+              columns={[
+                { key: "field", label: "Campo canonico" },
+                { key: "column", label: "Colonna sorgente" },
+              ]}
+              rows={Object.entries(inspection.mapped_fields || {}).map(([field, column]) => ({ field, column }))}
+            />
           </Section>
 
           <Section title="Readiness">
-            <pre>{JSON.stringify(inspection.readiness || {}, null, 2)}</pre>
+            <pre style={{ background: "#f8fafc", padding: 12, borderRadius: 12 }}>{JSON.stringify(inspection.readiness || {}, null, 2)}</pre>
           </Section>
 
           <Section title="Dettaglio sheets">
-            <pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(inspection.sheets || [], null, 2)}</pre>
+            <pre style={{ whiteSpace: "pre-wrap", background: "#f8fafc", padding: 12, borderRadius: 12 }}>
+              {JSON.stringify(inspection.sheets || [], null, 2)}
+            </pre>
           </Section>
         </>
       )}
