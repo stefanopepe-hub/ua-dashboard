@@ -1,0 +1,13 @@
+{
+  "columns": [
+    "Data documento",
+    "Tipo documento",
+    "Ragione sociale fornitore",
+    "Importo listino",
+    "Importo impegnato",
+    "Saving",
+    "Centro di costo",
+    "Buyer",
+    "Protocollo commessa"
+  ]
+}
