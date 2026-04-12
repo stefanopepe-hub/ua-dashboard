@@ -28,8 +28,14 @@
 - pagine frontend dedicate
 
 ## Fase 5
+- deploy separato su Render
+- collegamento frontend/backend
+- verifica ambiente enterprise_v2
+- test smoke end-to-end
+
+## Fase 6
 - reporting ed export
 - hardening
-- test
+- test avanzati
 - release gates
-- deploy controllato
+- go-live controllato
