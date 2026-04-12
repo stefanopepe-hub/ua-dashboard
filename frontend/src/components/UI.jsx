@@ -295,7 +295,7 @@ export function DataTable({ columns, rows, maxRows, emptyMessage, rowKey }) {
         </thead>
         <tbody>
           {data.map((row, i) => (
-            <tr key={i}>
+            <tr key={rowKey ? rowKey(row, i) : (row?.id ?? i)}>
               {columns.map(c => (
                 <td key={c.key} className={`${c.align === 'left' ? '' : 'text-right'} ${c.mono ? 'tabular' : ''}`}>
                   {c.render ? c.render(row[c.key], row) : (row[c.key] ?? '—')}
