@@ -7,5 +7,8 @@ Frontend separato dall'app attuale.
 - React
 - Vite
 
-## Primo obiettivo
-Costruire una pagina semplice che chiami il backend `/health` e poi la route `/inspect-columns`.
+## Stato batch 2
+- Health check backend
+- Upload file Excel
+- Chiamata a /inspect-excel
+- Visualizzazione struttura file, fogli, mapping, readiness
