@@ -36,6 +36,12 @@
   "sheets": []
 }
 
+## /analytics/saving/*
+{
+  "ok": true,
+  "data": []
+}
+
 ## Regola
 Le risposte devono avere shape stabile.
 Il frontend non deve mai ricevere strutture inattese.

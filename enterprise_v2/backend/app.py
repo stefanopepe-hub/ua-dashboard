@@ -6,6 +6,7 @@ import os
 
 from import_inspector import inspect_columns
 from workbook_inspector import inspect_workbook
+from analytics_store import load_sample_analytics
 
 app = FastAPI(title="Telethon Enterprise V2 API")
 
@@ -74,3 +75,45 @@ async def inspect_excel(file: UploadFile = File(...)):
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+@app.get("/analytics/saving/summary")
+def saving_summary():
+    data = load_sample_analytics()
+    return {"ok": True, "data": data["summary"]}
+
+
+@app.get("/analytics/saving/top-suppliers")
+def saving_top_suppliers():
+    data = load_sample_analytics()
+    return {"ok": True, "data": data["top_suppliers"]}
+
+
+@app.get("/analytics/saving/document-types")
+def saving_document_types():
+    data = load_sample_analytics()
+    return {"ok": True, "data": data["document_types"]}
+
+
+@app.get("/analytics/saving/cdc")
+def saving_cdc():
+    data = load_sample_analytics()
+    return {"ok": True, "data": data["cdc_breakdown"]}
+
+
+@app.get("/analytics/saving/buyers")
+def saving_buyers():
+    data = load_sample_analytics()
+    return {"ok": True, "data": data["buyers"]}
+
+
+@app.get("/analytics/saving/protocols")
+def saving_protocols():
+    data = load_sample_analytics()
+    return {"ok": True, "data": data["protocols"]}
+
+
+@app.get("/analytics/saving/yoy")
+def saving_yoy():
+    data = load_sample_analytics()
+    return {"ok": True, "data": data["yoy"]}
