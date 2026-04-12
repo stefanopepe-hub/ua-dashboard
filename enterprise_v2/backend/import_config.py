@@ -8,7 +8,7 @@ SUPPORTED_FILE_FAMILIES = [
 ]
 
 MANDATORY_CANONICAL_FIELDS = {
-    "saving_orders": ["supplier_name", "document_type"],
+    "saving_orders": ["supplier_name", "document_type", "document_date", "committed_amount"],
     "detailed_orders": ["supplier_name", "document_type"],
     "resources_team": ["resource_name"],
     "cycle_times": ["duration_days"],
