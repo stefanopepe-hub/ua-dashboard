@@ -55,6 +55,7 @@ export const api = {
   perCategoria:(p={}) => get(`/kpi/saving/per-categoria${qs(p)}`),
   topFornitori:(p={}) => get(`/kpi/saving/top-fornitori${qs(p)}`),
   pareto:      (p={}) => get(`/kpi/saving/pareto-fornitori${qs(p)}`),
+  concentration:(p={}) => get(`/kpi/saving/concentration-index${qs(p)}`),
   valute:      (p={}) => get(`/kpi/saving/valute${qs(p)}`),
 
   // Alias legacy (usati in Fornitori.jsx e AlfaDoc.jsx)
