@@ -1,57 +1,50 @@
 /**
- * hooks/useKpi.js — React Query hook per analytics KPI
- * 
- * Enterprise upgrade rispetto al polling semplice:
- * - cache automatica (staleTime 5min)
- * - retry automatico (3 tentativi con backoff)
- * - error boundary friendly
- * - no refetch inutile su navigazione
- * - stato separato per ogni widget
+ * hooks/useKpi.js — KPI data hook
+ *
+ * Approccio diretto senza React Query per evitare cache key collision.
+ * Ogni chiamata useKpi è indipendente e ha il suo stato locale.
  */
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState, useEffect, useRef } from 'react'
 
-/**
- * Hook KPI generico con React Query.
- * 
- * @param {Function} fetchFn - funzione async che ritorna i dati
- * @param {Array} deps - dipendenze per la cache key
- * @param {Object} options - opzioni React Query override
- */
 export function useKpi(fetchFn, deps = [], options = {}) {
-  const key = ['kpi', ...deps.map(d => String(d ?? ''))]
+  const [data,    setData]    = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error,   setError]   = useState(null)
+  const counter = useRef(0)
 
-  const query = useQuery({
-    queryKey: key,
-    queryFn: fetchFn,
-    staleTime: 5 * 60 * 1000,      // 5 minuti — non refetch se dati freschi
-    gcTime: 10 * 60 * 1000,        // 10 minuti in cache dopo unmount
-    retry: 2,
-    retryDelay: attempt => Math.min(1000 * 2 ** attempt, 10000),
-    refetchOnWindowFocus: false,   // non refetch quando torna in focus
-    ...options,
-  })
+  useEffect(() => {
+    let cancelled = false
+    const id = ++counter.current
+    setLoading(true)
+    setError(null)
 
-  return {
-    data:    query.data ?? null,
-    loading: query.isLoading || query.isFetching,
-    error:   query.error?.message ?? null,
-    refetch: query.refetch,
-    isStale: query.isStale,
-  }
+    fetchFn()
+      .then(result => {
+        if (cancelled || id !== counter.current) return
+        setData(result ?? null)
+        setLoading(false)
+      })
+      .catch(err => {
+        if (cancelled || id !== counter.current) return
+        setError(err?.message ?? String(err))
+        setLoading(false)
+      })
+
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps)
+
+  const refetch = () => { counter.current++; setLoading(true); setError(null)
+    fetchFn().then(r => { setData(r ?? null); setLoading(false) })
+             .catch(e => { setError(e?.message ?? String(e)); setLoading(false) }) }
+
+  return { data, loading, error, refetch }
 }
 
-/**
- * Hook per invalidare la cache dopo un upload.
- * Chiama invalidateKpi() dopo un import riuscito.
- */
+// Kept for backward compatibility — no-op without React Query
 export function useKpiInvalidation() {
-  const client = useQueryClient()
   return {
-    invalidateKpi: (prefix = 'kpi') => {
-      client.invalidateQueries({ queryKey: [prefix] })
-    },
-    invalidateAll: () => {
-      client.invalidateQueries()
-    },
+    invalidateKpi: () => {},
+    invalidateAll: () => {},
   }
 }
