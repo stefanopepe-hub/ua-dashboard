@@ -1,7 +1,6 @@
 import { useState } from "react";
 import Section from "../components/Section.jsx";
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+import { API_BASE } from "../config.js";
 
 export default function InspectPage() {
   const [health, setHealth] = useState(null);
