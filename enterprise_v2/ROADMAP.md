@@ -11,6 +11,8 @@
 - file family detection
 - mapping colonne
 - data quality / readiness
+- upload Excel reale
+- multi-sheet inspection
 
 ## Fase 3
 - analytics saving / ordini
