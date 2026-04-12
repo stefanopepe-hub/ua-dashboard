@@ -94,11 +94,21 @@ def saving_filters(anno=None, str_ric=None, cdc=None, alfa=None,
 
 def get_saving_df(anno=None, str_ric=None, cdc=None, alfa=None,
                   macro=None, pref_comm=None, cols="*") -> pd.DataFrame:
-    """Carica saving dal DB con paginazione e normalizzazione."""
     rows = query("saving", saving_filters(anno, str_ric, cdc, alfa, macro, pref_comm), cols)
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+    if "data_doc" in df.columns:
+        df["data_doc"] = pd.to_datetime(df["data_doc"], errors="coerce")
+    else:
+        df["data_doc"] = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    for c in ['imp_listino_eur', 'imp_impegnato_eur', 'saving_eur']:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+    for c in ['negoziazione', 'accred_albo']:
+        if c in df.columns:
+            df[c] = df[c].fillna(False).astype(bool)
+    return df
     # Normalizza tipi
     df['data_doc'] = pd.to_datetime(df.get('data_doc', pd.Series()), errors='coerce')
     for c in ['imp_listino_eur', 'imp_impegnato_eur', 'saving_eur']:
