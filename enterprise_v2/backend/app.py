@@ -5,6 +5,7 @@ import os
 
 from import_inspector import inspect_columns
 from excel_reader import read_excel_columns
+from workbook_reader import list_workbook_sheets
 
 app = FastAPI(title="Telethon Enterprise V2 API")
 
@@ -33,9 +34,11 @@ async def inspect_excel(file: UploadFile = File(...)):
         temp_path = temp_file.name
 
     try:
+        sheets = list_workbook_sheets(temp_path)
         columns = read_excel_columns(temp_path)
         result = inspect_columns(columns)
         result["file_name"] = file.filename
+        result["sheet_names"] = sheets
         return result
     finally:
         if os.path.exists(temp_path):
