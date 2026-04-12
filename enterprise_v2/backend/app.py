@@ -6,7 +6,12 @@ import os
 
 from import_inspector import inspect_columns
 from workbook_inspector import inspect_workbook
-from analytics_store import load_sample_analytics
+from analytics_store import (
+    load_sample_analytics,
+    load_sample_resources,
+    load_sample_cycle,
+    load_sample_nc,
+)
 
 app = FastAPI(title="Telethon Enterprise V2 API")
 
@@ -18,30 +23,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 class InspectColumnsRequest(BaseModel):
     columns: list[str]
-
 
 @app.get("/health")
 def health():
     return {"ok": True, "service": "enterprise_v2_backend"}
 
-
 @app.post("/inspect-columns")
 def inspect_columns_endpoint(payload: InspectColumnsRequest):
     return inspect_columns(payload.columns)
 
-
 @app.post("/inspect-excel")
 async def inspect_excel(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1] or ".xlsx"
-
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
         content = await file.read()
         temp_file.write(content)
         temp_path = temp_file.name
-
     try:
         inspection = inspect_workbook(temp_path)
         return {
@@ -76,44 +75,70 @@ async def inspect_excel(file: UploadFile = File(...)):
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-
 @app.get("/analytics/saving/summary")
 def saving_summary():
-    data = load_sample_analytics()
-    return {"ok": True, "data": data["summary"]}
-
+    return {"ok": True, "data": load_sample_analytics()["summary"]}
 
 @app.get("/analytics/saving/top-suppliers")
 def saving_top_suppliers():
-    data = load_sample_analytics()
-    return {"ok": True, "data": data["top_suppliers"]}
-
+    return {"ok": True, "data": load_sample_analytics()["top_suppliers"]}
 
 @app.get("/analytics/saving/document-types")
 def saving_document_types():
-    data = load_sample_analytics()
-    return {"ok": True, "data": data["document_types"]}
-
+    return {"ok": True, "data": load_sample_analytics()["document_types"]}
 
 @app.get("/analytics/saving/cdc")
 def saving_cdc():
-    data = load_sample_analytics()
-    return {"ok": True, "data": data["cdc_breakdown"]}
-
+    return {"ok": True, "data": load_sample_analytics()["cdc_breakdown"]}
 
 @app.get("/analytics/saving/buyers")
 def saving_buyers():
-    data = load_sample_analytics()
-    return {"ok": True, "data": data["buyers"]}
-
+    return {"ok": True, "data": load_sample_analytics()["buyers"]}
 
 @app.get("/analytics/saving/protocols")
 def saving_protocols():
-    data = load_sample_analytics()
-    return {"ok": True, "data": data["protocols"]}
-
+    return {"ok": True, "data": load_sample_analytics()["protocols"]}
 
 @app.get("/analytics/saving/yoy")
 def saving_yoy():
-    data = load_sample_analytics()
-    return {"ok": True, "data": data["yoy"]}
+    return {"ok": True, "data": load_sample_analytics()["yoy"]}
+
+@app.get("/analytics/resources/summary")
+def resources_summary():
+    return {"ok": True, "data": load_sample_resources()["summary"]}
+
+@app.get("/analytics/resources/list")
+def resources_list():
+    return {"ok": True, "data": load_sample_resources()["resources"]}
+
+@app.get("/analytics/resources/monthly-trend")
+def resources_monthly_trend():
+    return {"ok": True, "data": load_sample_resources()["monthly_trend"]}
+
+@app.get("/analytics/cycle/summary")
+def cycle_summary():
+    return {"ok": True, "data": load_sample_cycle()["summary"]}
+
+@app.get("/analytics/cycle/bottlenecks")
+def cycle_bottlenecks():
+    return {"ok": True, "data": load_sample_cycle()["bottlenecks"]}
+
+@app.get("/analytics/cycle/monthly-trend")
+def cycle_monthly_trend():
+    return {"ok": True, "data": load_sample_cycle()["monthly_trend"]}
+
+@app.get("/analytics/nc/summary")
+def nc_summary():
+    return {"ok": True, "data": load_sample_nc()["summary"]}
+
+@app.get("/analytics/nc/top-suppliers")
+def nc_top_suppliers():
+    return {"ok": True, "data": load_sample_nc()["top_suppliers"]}
+
+@app.get("/analytics/nc/types")
+def nc_types():
+    return {"ok": True, "data": load_sample_nc()["types"]}
+
+@app.get("/analytics/nc/monthly-trend")
+def nc_monthly_trend():
+    return {"ok": True, "data": load_sample_nc()["monthly_trend"]}

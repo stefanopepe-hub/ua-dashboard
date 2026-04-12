@@ -1,9 +1,19 @@
-from __future__ import annotations
 from pathlib import Path
 import json
 
-DATA_FILE = Path(__file__).parent / "data" / "sample_saving_analytics.json"
+BASE = Path(__file__).parent / "data"
 
+def _load(name: str) -> dict:
+    return json.loads((BASE / name).read_text(encoding="utf-8"))
 
 def load_sample_analytics() -> dict:
-    return json.loads(DATA_FILE.read_text(encoding="utf-8"))
+    return _load("sample_saving_analytics.json")
+
+def load_sample_resources() -> dict:
+    return _load("sample_resources_analytics.json")
+
+def load_sample_cycle() -> dict:
+    return _load("sample_cycle_analytics.json")
+
+def load_sample_nc() -> dict:
+    return _load("sample_nc_analytics.json")
