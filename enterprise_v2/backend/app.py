@@ -1,7 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from pydantic import BaseModel
+import tempfile
+import os
 
 from import_inspector import inspect_columns
+from excel_reader import read_excel_columns
 
 app = FastAPI(title="Telethon Enterprise V2 API")
 
@@ -18,3 +21,22 @@ def health():
 @app.post("/inspect-columns")
 def inspect_columns_endpoint(payload: InspectColumnsRequest):
     return inspect_columns(payload.columns)
+
+
+@app.post("/inspect-excel")
+async def inspect_excel(file: UploadFile = File(...)):
+    suffix = os.path.splitext(file.filename)[1] or ".xlsx"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        content = await file.read()
+        temp_file.write(content)
+        temp_path = temp_file.name
+
+    try:
+        columns = read_excel_columns(temp_path)
+        result = inspect_columns(columns)
+        result["file_name"] = file.filename
+        return result
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
