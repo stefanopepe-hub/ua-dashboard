@@ -4,18 +4,19 @@ HTTP layer puro. Nessuna business logic qui.
 Delega tutto a upload_engine + services.
 """
 import logging
+import os
 from typing import Optional
+
 from fastapi import APIRouter, File, UploadFile, HTTPException, Query
 from supabase import create_client
-import os
 
 from upload_engine import (
-    process_upload, inspect_bytes, inspect_and_load,
-    compute_readiness, UploadResult,
+    process_upload,
+    inspect_bytes,
+    inspect_and_load,
+    compute_readiness,
 )
 from ingestion_engine import mapping_result_to_dict
-from models.errors import translate_db_error
-from models.responses import UploadResponse, InspectResponse
 
 log = logging.getLogger("ua.upload")
 router = APIRouter(prefix="/upload", tags=["upload"])
@@ -23,31 +24,16 @@ router = APIRouter(prefix="/upload", tags=["upload"])
 
 def sb():
     return create_client(
-
-
-ALLOWED_BY_TARGET = {
-    "saving": {"savings", "saving", "orders_detail", "orders", "detailed_orders"},
-    "risorse": {"resources", "risorse", "team", "orders_detail", "orders", "detailed_orders"},
-    "tempi": {"tempi", "cycle_times", "tempo_attraversamento", "orders_detail", "orders", "detailed_orders"},
-    "nc": {"nc", "non_conformities", "non_conformita"},
-}
-
-def _normalize_family(value: str | None) -> str:
-    return (value or "").strip().lower()
-
-def _is_family_allowed(target: str, family: str | None) -> bool:
-    fam = _normalize_family(family)
-    return fam in ALLOWED_BY_TARGET.get(target, set())
-
-def _contextual_response(result, target: str):
-    payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
-    payload["target_domain"] = target
-    payload["family_allowed_for_target"] = _is_family_allowed(target, getattr(result, "family", None))
-    return payload
-
         os.getenv("SUPABASE_URL", ""),
         os.getenv("SUPABASE_SERVICE_KEY", "")
     )
+
+
+def _result_payload(result, target_domain: Optional[str] = None):
+    payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+    if target_domain:
+        payload["target_domain"] = target_domain
+    return payload
 
 
 @router.post("/inspect")
@@ -63,12 +49,12 @@ async def upload_inspect(file: UploadFile = File(...)):
         wbi = inspect_and_load(contents, file.filename)
         readiness = compute_readiness(mr, wbi)
         result.update({
-            "year_detected":       readiness["year_detected"],
-            "years_found":         readiness["years_found"],
-            "yoy_ready":           readiness["yoy_ready"],
-            "yoy_note":            readiness["yoy_note"],
+            "year_detected": readiness["year_detected"],
+            "years_found": readiness["years_found"],
+            "yoy_ready": readiness["yoy_ready"],
+            "yoy_note": readiness["yoy_note"],
             "normalization_notes": readiness["normalization_notes"],
-            "family_label":        readiness["family_label"],
+            "family_label": readiness["family_label"],
         })
         return result
     except ValueError as e:
@@ -92,8 +78,12 @@ async def upload_auto(
     contents = await file.read()
     try:
         result = process_upload(
-            file_bytes=contents, filename=file.filename, client=sb(),
-            cdc_override=cdc_override, yoy_mode=yoy_mode, forced_family=forced_family,
+            file_bytes=contents,
+            filename=file.filename,
+            client=sb(),
+            cdc_override=cdc_override,
+            yoy_mode=yoy_mode,
+            forced_family=forced_family,
         )
     except Exception as e:
         log.error(f"upload_auto error {file.filename}: {e}", exc_info=True)
@@ -101,7 +91,8 @@ async def upload_auto(
 
     if result.status == "failed" and not result.upload_id:
         raise HTTPException(400, result.error or "Upload fallito.")
-    return result.to_dict()
+
+    return _result_payload(result)
 
 
 @router.post("/saving")
@@ -110,28 +101,42 @@ async def upload_saving(
     cdc_override: Optional[str] = Query(None),
     yoy_mode: bool = Query(False),
 ):
-    """Upload file saving/ordini — compatibilità frontend."""
+    """
+    Upload file per dominio Saving / Ordini.
+    Il file viene interpretato per le analisi saving anche se è un detailed orders compatibile.
+    """
     contents = await file.read()
     try:
         result = process_upload(
-            file_bytes=contents, filename=file.filename, client=sb(),
-            cdc_override=cdc_override, yoy_mode=yoy_mode,
+            file_bytes=contents,
+            filename=file.filename,
+            client=sb(),
+            cdc_override=cdc_override,
+            yoy_mode=yoy_mode,
         )
     except Exception as e:
         log.error(f"upload_saving error {file.filename}: {e}", exc_info=True)
         raise HTTPException(500, "Errore durante l'elaborazione del file.")
 
     if result.status == "failed" and not result.upload_id:
-        raise HTTPException(400, result.error or "File non riconoscibile.")
-    return result.to_dict()
+        raise HTTPException(400, result.error or "File non riconoscibile per il dominio Saving.")
+
+    return _result_payload(result, target_domain="saving")
 
 
 @router.post("/risorse")
 async def upload_risorse(file: UploadFile = File(...)):
-    """Upload file per analisi Risorse/Operatività.
-    Accetta sia file resources puri sia orders_detail, che verranno interpretati nel dominio Risorse.
+    """
+    Upload file per dominio Risorse / Operatività.
+
+    Regola di business:
+    - se il file è un vero file risorse/team, viene importato come tale
+    - se il file è un detailed orders compatibile, viene comunque accettato
+      perché deve poter alimentare le analisi Risorse
     """
     contents = await file.read()
+
+    # Primo tentativo: file risorse puro
     try:
         result = process_upload(
             file_bytes=contents,
@@ -140,38 +145,43 @@ async def upload_risorse(file: UploadFile = File(...)):
             forced_family="risorse",
         )
     except Exception as e:
-        log.error(f"upload_risorse error {file.filename}: {e}", exc_info=True)
-        raise HTTPException(500, "Errore durante l'elaborazione del file risorse.")
+        log.error(f"upload_risorse primary error {file.filename}: {e}", exc_info=True)
+        result = None
 
-    if result.status == "failed" and not result.upload_id:
-        # fallback: alcuni file dettagliati ordini devono poter alimentare Risorse
+    # Fallback: alcuni file ordini dettagliati devono essere validi anche per Risorse
+    if result is None or (result.status == "failed" and not result.upload_id):
         try:
             result = process_upload(
                 file_bytes=contents,
                 filename=file.filename,
                 client=sb(),
                 forced_family="orders_detail",
-                target_domain="risorse",
             )
-        except TypeError:
-            # compatibilità con versioni di process_upload senza target_domain
-            pass
+        except Exception as e:
+            log.error(f"upload_risorse fallback error {file.filename}: {e}", exc_info=True)
+            raise HTTPException(500, "Errore durante l'elaborazione del file risorse.")
 
     if result.status == "failed" and not result.upload_id:
         raise HTTPException(
             400,
-            result.error or
-            "Il file non è compatibile con il dominio Risorse. "
-            "Carica un file team dedicato oppure un file ordini dettagliati compatibile."
+            result.error or (
+                "File non riconoscibile per il dominio Risorse. "
+                "Carica un file team dedicato oppure un file ordini dettagliati compatibile."
+            ),
         )
 
-    return _contextual_response(result, "risorse")
+    return _result_payload(result, target_domain="risorse")
 
 
 @router.post("/tempi")
 async def upload_tempi(file: UploadFile = File(...)):
-    """Upload file per analisi Tempi Attraversamento."""
+    """
+    Upload file per dominio Tempi Attraversamento.
+
+    Accetta anche ordini dettagliati compatibili, se il motore li sa interpretare.
+    """
     contents = await file.read()
+
     try:
         result = process_upload(
             file_bytes=contents,
@@ -180,34 +190,32 @@ async def upload_tempi(file: UploadFile = File(...)):
             forced_family="tempi",
         )
     except Exception as e:
-        log.error(f"upload_tempi error {file.filename}: {e}", exc_info=True)
-        raise HTTPException(500, "Errore durante l'elaborazione del file tempi.")
+        log.error(f"upload_tempi primary error {file.filename}: {e}", exc_info=True)
+        result = None
 
-    if result.status == "failed" and not result.upload_id:
+    if result is None or (result.status == "failed" and not result.upload_id):
         try:
             result = process_upload(
                 file_bytes=contents,
                 filename=file.filename,
                 client=sb(),
                 forced_family="orders_detail",
-                target_domain="tempi",
             )
-        except TypeError:
-            pass
+        except Exception as e:
+            log.error(f"upload_tempi fallback error {file.filename}: {e}", exc_info=True)
+            raise HTTPException(500, "Errore durante l'elaborazione del file tempi.")
 
     if result.status == "failed" and not result.upload_id:
-        raise HTTPException(
-            400,
-            result.error or
-            "Il file non è compatibile con il dominio Tempi Attraversamento."
-        )
+        raise HTTPException(400, result.error or "File tempi non riconoscibile.")
 
-    return _contextual_response(result, "tempi")
+    return _result_payload(result, target_domain="tempi")
 
 
 @router.post("/nc")
 async def upload_nc(file: UploadFile = File(...)):
-    """Upload file per analisi Non Conformità."""
+    """
+    Upload file per dominio Non Conformità.
+    """
     contents = await file.read()
     try:
         result = process_upload(
@@ -218,22 +226,35 @@ async def upload_nc(file: UploadFile = File(...)):
         )
     except Exception as e:
         log.error(f"upload_nc error {file.filename}: {e}", exc_info=True)
-        raise HTTPException(500, "Errore durante l'elaborazione del file NC.")
+        raise HTTPException(500, "Errore durante l'elaborazione del file.")
 
     if result.status == "failed" and not result.upload_id:
-        raise HTTPException(400, result.error or "Il file non è compatibile con il dominio NC.")
+        raise HTTPException(400, result.error or "File NC non riconoscibile.")
 
-    return _contextual_response(result, "nc")
+    return _result_payload(result, target_domain="nc")
 
 
 @router.get("/log")
 def upload_log():
-    """Storico caricamenti."""
-    return sb().table("upload_log").select("*").order("upload_date", desc=True).limit(50).execute().data
+    """
+    Storico caricamenti.
+    """
+    data = (
+        sb()
+        .table("upload_log")
+        .select("*")
+        .order("upload_date", desc=True)
+        .limit(50)
+        .execute()
+        .data
+    )
+    return data if isinstance(data, list) else []
 
 
 @router.delete("/{upload_id}")
 def delete_upload(upload_id: str):
-    """Elimina un upload e i dati correlati."""
+    """
+    Elimina un upload e i dati correlati.
+    """
     sb().table("upload_log").delete().eq("id", upload_id).execute()
     return {"status": "deleted"}
