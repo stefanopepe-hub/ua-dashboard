@@ -15,7 +15,9 @@
     "available_fields": [],
     "missing_required_fields": []
   },
-  "confidence_score": 0.0
+  "confidence_score": 0.0,
+  "sheet_names": [],
+  "file_name": "example.xlsx"
 }
 
 ## Regola
