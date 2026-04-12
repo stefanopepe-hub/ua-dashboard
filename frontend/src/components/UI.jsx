@@ -274,7 +274,7 @@ export function Badge({ color = 'gray', children, dot = false }) {
 // DATA TABLE — con paginazione opzionale
 // ─────────────────────────────────────────────────────────────────
 
-export function DataTable({ columns, rows, maxRows, emptyMessage }) {
+export function DataTable({ columns, rows, maxRows, emptyMessage, rowKey }) {
   const data = maxRows ? rows.slice(0, maxRows) : rows
   if (!data?.length) {
     return (
