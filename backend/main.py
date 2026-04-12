@@ -761,63 +761,124 @@ def kpi_yoy_cdc(anno: int = Query(...)):
 # RISORSE
 # ─────────────────────────────────────────────────────────────────
 
-@app.get("/kpi/risorse/riepilogo")
-def kpi_risorse():
-    rows = query("resource_performance")
+def _get_risorse_df(anno: Optional[int] = None) -> pd.DataFrame:
+    # 1) prova tabella dedicata resource_performance
+    rows = query(sb(), "resource_performance")
     df = pd.DataFrame(rows)
+
+    if not df.empty:
+        if anno is not None and "year" in df.columns:
+            df = df[df["year"] == anno]
+        return df
+
+    # 2) fallback: deriva le analytics Risorse dai file ordini/saving già caricati
+    rows = query(
+        sb(),
+        "saving",
+        select="data_doc,utente_presentazione,utente,str_ric,saving_eur,negoziazione,protoc_commessa,protoc_ordine"
+    )
+    df = pd.DataFrame(rows)
+
     if df.empty:
-        return {"available": False, "reason": "Nessun file risorse caricato."}
-    n = len(df)
-    risorse = df["risorsa"].dropna().nunique()
-    avg_pratiche = df["pratiche_gestite"].dropna().mean()
-    tot_saving = df["saving_generato"].dropna().sum()
+        return df
+
+    if "data_doc" in df.columns:
+        df["data_doc"] = pd.to_datetime(df["data_doc"], errors="coerce")
+
+    df = df.dropna(subset=["data_doc"])
+
+    if anno is not None:
+        df = df[df["data_doc"].dt.year == anno]
+
+    if df.empty:
+        return df
+
+    df["risorsa"] = df["utente_presentazione"].fillna(df["utente"]).fillna("N/D")
+    df["struttura"] = df["str_ric"].fillna("N/D")
+    df["year"] = df["data_doc"].dt.year
+    df["mese"] = df["data_doc"].dt.strftime("%Y-%m")
+    df["mese_label"] = df["mese"]
+    df["saving_generato"] = pd.to_numeric(df["saving_eur"], errors="coerce").fillna(0)
+
+    if "negoziazione" in df.columns:
+        df["negoziazione"] = df["negoziazione"].fillna(False).astype(bool)
+    else:
+        df["negoziazione"] = False
+
+    grouped = (
+        df.groupby(["risorsa", "struttura", "year", "mese", "mese_label"], dropna=False)
+          .agg(
+              pratiche_gestite=("protoc_commessa", "count"),
+              pratiche_aperte=("protoc_commessa", "count"),
+              pratiche_chiuse=("protoc_commessa", "count"),
+              saving_generato=("saving_generato", "sum"),
+              negoziazioni_concluse=("negoziazione", "sum"),
+          )
+          .reset_index()
+    )
+
+    grouped["tempo_medio_giorni"] = None
+    grouped["efficienza"] = None
+
+    return grouped
+
+
+@router.get("/risorse/riepilogo")
+def api_risorse_riepilogo(anno: Optional[int] = Query(None)):
+    df = _get_risorse_df(anno)
+    if df.empty:
+        return {"available": False, "reason": "Nessun dataset risorse disponibile."}
+
+    avg_pratiche = df["pratiche_gestite"].dropna().mean() if "pratiche_gestite" in df.columns else 0
+    tot_saving = df["saving_generato"].dropna().sum() if "saving_generato" in df.columns else 0
+
     return {
         "available": True,
-        "n_record": n,
-        "n_risorse": risorse,
-        "avg_pratiche_gestite": round(float(avg_pratiche), 1) if avg_pratiche else 0,
-        "tot_saving_generato": round(float(tot_saving), 2) if tot_saving else 0,
+        "n_record": len(df),
+        "n_risorse": int(df["risorsa"].dropna().nunique()) if "risorsa" in df.columns else 0,
+        "avg_pratiche_gestite": round(float(avg_pratiche), 1) if pd.notna(avg_pratiche) else 0,
+        "tot_saving_generato": round(float(tot_saving), 2) if pd.notna(tot_saving) else 0,
     }
 
-@app.get("/kpi/risorse/per-risorsa")
-def kpi_risorse_per_risorsa(anno: Optional[int] = Query(None)):
-    rows = query("resource_performance")
-    df = pd.DataFrame(rows)
-    if df.empty: return []
-    if anno:
-        df = df[df["year"] == anno]
-    if df.empty: return []
+
+@router.get("/risorse/per-risorsa")
+def api_risorse_per_risorsa(anno: Optional[int] = Query(None)):
+    df = _get_risorse_df(anno)
+    if df.empty:
+        return []
+
     result = []
     for risorsa, g in df.groupby("risorsa"):
         result.append({
-                      "risorsa": risorsa,
+            "risorsa": risorsa,
             "struttura": g["struttura"].dropna().mode().iloc[0] if not g["struttura"].dropna().empty else None,
-            "pratiche_gestite":      int(g["pratiche_gestite"].sum()),
-            "pratiche_aperte":       int(g["pratiche_aperte"].sum()),
-            "pratiche_chiuse":       int(g["pratiche_chiuse"].sum()),
-            "saving_generato":       round(float(g["saving_generato"].sum()), 2),
-            "negoziazioni_concluse": int(g["negoziazioni_concluse"].sum()),
-            "tempo_medio_giorni":    round(float(g["tempo_medio_giorni"].mean()), 1) if not g["tempo_medio_giorni"].dropna().empty else None,
-            "efficienza":            round(float(g["efficienza"].mean()), 1) if not g["efficienza"].dropna().empty else None,
+            "pratiche_gestite": int(g["pratiche_gestite"].sum()) if "pratiche_gestite" in g.columns else 0,
+            "pratiche_aperte": int(g["pratiche_aperte"].sum()) if "pratiche_aperte" in g.columns else 0,
+            "pratiche_chiuse": int(g["pratiche_chiuse"].sum()) if "pratiche_chiuse" in g.columns else 0,
+            "saving_generato": round(float(g["saving_generato"].sum()), 2) if "saving_generato" in g.columns else 0,
+            "negoziazioni_concluse": int(g["negoziazioni_concluse"].sum()) if "negoziazioni_concluse" in g.columns else 0,
+            "tempo_medio_giorni": None,
+            "efficienza": None,
         })
+
     return sorted(result, key=lambda x: x["saving_generato"], reverse=True)
 
-@app.get("/kpi/risorse/mensile")
-def kpi_risorse_mensile(anno: Optional[int] = Query(None)):
-    rows = query("resource_performance")
-    df = pd.DataFrame(rows)
-    if df.empty: return []
-    if anno:
-        df = df[df["year"] == anno]
-    if df.empty: return []
+
+@router.get("/risorse/mensile")
+def api_risorse_mensile(anno: Optional[int] = Query(None)):
+    df = _get_risorse_df(anno)
+    if df.empty:
+        return []
+
     result = []
     for mese, g in df.groupby("mese_label"):
         result.append({
             "mese": mese,
-            "pratiche_totali": int(g["pratiche_gestite"].sum()),
-            "saving_totale":   round(float(g["saving_generato"].sum()), 2),
-            "n_risorse_attive": g["risorsa"].nunique(),
+            "pratiche_totali": int(g["pratiche_gestite"].sum()) if "pratiche_gestite" in g.columns else 0,
+            "saving_totale": round(float(g["saving_generato"].sum()), 2) if "saving_generato" in g.columns else 0,
+            "n_risorse_attive": int(g["risorsa"].nunique()) if "risorsa" in g.columns else 0,
         })
+
     return sorted(result, key=lambda x: x["mese"])
 
 
