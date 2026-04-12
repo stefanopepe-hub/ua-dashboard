@@ -25,9 +25,10 @@
 - analytics risorse
 - analytics tempi attraversamento
 - analytics non conformità
-- reporting ed export
+- pagine frontend dedicate
 
 ## Fase 5
+- reporting ed export
 - hardening
 - test
 - release gates
