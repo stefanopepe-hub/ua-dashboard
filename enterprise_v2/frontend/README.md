@@ -1,10 +1,11 @@
 # Frontend Enterprise V2
 
-## Obiettivo
-Frontend separato dall'app attuale.
+## Stato batch 4
+- Upload & Inspect
+- Saving Dashboard
+- Resources page
+- Cycle Times page
+- Non-Conformities page
 
-## Stato batch 3
-- Health check backend
-- Upload file Excel
-- Chiamata a /inspect-excel
-- Pagina Saving Dashboard demo con KPI, top fornitori, tipologie doc, CDC, buyer, protocolli, YoY
+## Obiettivo
+Estendere gradualmente la nuova piattaforma enterprise senza toccare l'app attuale.
