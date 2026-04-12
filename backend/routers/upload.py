@@ -106,32 +106,35 @@ async def upload_saving(
 
 @router.post("/risorse")
 async def upload_risorse(file: UploadFile = File(...)):
-    """Upload file risorse/team con guardrail di famiglia obbligatori."""
+    """Upload file risorse/team."""
     contents = await file.read()
     try:
-        result = process_upload(
-            file_bytes=contents,
-            filename=file.filename,
-            client=sb(),
-            forced_family="risorse",
-        )
+        result = process_upload(file_bytes=contents, filename=file.filename, client=sb())
     except Exception as e:
         log.error(f"upload_risorse error {file.filename}: {e}", exc_info=True)
         raise HTTPException(500, "Errore durante l'elaborazione del file.")
 
+    detected = (result.family or "").strip().lower()
+
+    # accetta solo famiglie realmente risorse/team
+    allowed = {"risorse", "resources", "team", "resource_performance"}
+
+    if detected not in allowed:
+        raise HTTPException(
+            400,
+            f"Questo file non appartiene al dominio Risorse/Team. "
+            f"Famiglia rilevata: {result.family_label or result.family or 'sconosciuta'}."
+        )
+
     if result.status == "failed" and not result.upload_id:
         raise HTTPException(
             400,
-            result.error or "File non riconoscibile come file risorse. Verifica che contenga: Risorsa, Mese, Pratiche Gestite.",
+            result.error or
+            "File non riconoscibile come file risorse. "
+            "Verifica che contenga: Risorsa, Mese, Pratiche Gestite."
         )
 
-    if result.family != "risorse":
-        raise HTTPException(
-            400,
-            f"File non coerente con il dominio Risorse/Team. Famiglia rilevata: {result.family_label or result.family}.",
-        )
     return result.to_dict()
-
 
 @router.post("/tempi")
 async def upload_tempi(file: UploadFile = File(...)):
