@@ -7,12 +7,13 @@ from readiness_checker import compute_readiness
 
 
 def inspect_columns(column_names: Iterable[str]) -> Dict:
-    normalized_columns = normalize_columns(column_names)
+    cols = list(column_names)
+    normalized_columns = normalize_columns(cols)
     file_family = detect_file_family(normalized_columns)
-    mapped_fields = map_columns_to_canonical(column_names)
+    mapped_fields = map_columns_to_canonical(cols)
     readiness = compute_readiness(file_family, mapped_fields)
 
-    total_columns = len(list(column_names)) if column_names else 0
+    total_columns = len(cols)
     mapped_count = len(mapped_fields)
     confidence = round(mapped_count / total_columns, 2) if total_columns > 0 else 0.0
 

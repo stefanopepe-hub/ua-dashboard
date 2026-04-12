@@ -7,8 +7,4 @@ def compute_readiness(file_family: str, mapped_fields: Dict[str, str]) -> Dict[s
     required_fields = MANDATORY_CANONICAL_FIELDS.get(file_family, [])
     available = list(mapped_fields.keys())
     missing = [field for field in required_fields if field not in mapped_fields]
-
-    return {
-        "available_fields": available,
-        "missing_required_fields": missing,
-    }
+    return {"available_fields": available, "missing_required_fields": missing}

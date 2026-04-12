@@ -9,16 +9,12 @@ def select_best_sheet(file_path: str, sheet_names: list[str]) -> tuple[str | Non
         "file_family": "unknown",
         "normalized_columns": [],
         "mapped_fields": {},
-        "readiness": {
-            "available_fields": [],
-            "missing_required_fields": [],
-        },
+        "readiness": {"available_fields": [], "missing_required_fields": []},
     }
 
     for sheet_name in sheet_names:
         columns = read_excel_columns(file_path, sheet_name=sheet_name)
         result = inspect_columns(columns)
-
         if result["confidence_score"] > best_result["confidence_score"]:
             best_sheet = sheet_name
             best_result = result
