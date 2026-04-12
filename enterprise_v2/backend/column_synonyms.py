@@ -11,7 +11,12 @@ COLUMN_SYNONYMS = {
         "doc type", "alfa documento", "ordine", "tipo ordine"
     ],
     "document_date": [
-        "data documento", "data doc", "document date", "doc date", "date"
+    "data documento",
+    "data doc",
+    "data doc.",
+    "document date",
+    "doc date",
+    "date"
     ],
     "list_amount": [
         "importo listino", "listino", "imp iniziale", "imp. iniziale",
