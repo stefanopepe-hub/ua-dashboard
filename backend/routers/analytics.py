@@ -132,8 +132,6 @@ def api_per_categoria(anno: Optional[int] = Query(None), str_ric: Optional[str] 
 
 # ── Risorse ──────────────────────────────────────────────────────
 
-# ── Risorse ──────────────────────────────────────────────────────
-
 def _get_risorse_df(anno: Optional[int] = None) -> pd.DataFrame:
     # 1) prova tabella dedicata resource_performance
     rows = query(sb(), "resource_performance")
