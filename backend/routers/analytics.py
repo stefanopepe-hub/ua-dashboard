@@ -164,42 +164,116 @@ def _get_risorse_df(anno: Optional[int] = None) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Derivazione dataset Risorse da saving/orders_detail
-    if "utente_presentazione" in df.columns:
-        df["risorsa"] = df["utente_presentazione"].fillna(df.get("utente"))
-    else:
-        df["risorsa"] = df.get("utente")
+       # ============================================================
+    # NORMALIZZAZIONE TEAM ACQUISTI
+    # ============================================================
+    TEAM_CANONICO = {
+        "stefano pepe": "Stefano Pepe",
+        "francesco di clemente": "Francesco Di Clemente",
+        "silvana ruotolo": "Silvana Ruotolo",
+        "marina padricelli": "Marina Padricelli",
+        "luisa veneruso": "Luisa Veneruso",
+        "katuscia leonardi": "Katuscia Leonardi",
+        "francesca perazzetti": "Francesca Perazzetti",
+        "loredana scialanga": "Loredana Scialanga",
+        "mariacarla di matteo": "Mariacarla Di Matteo",
+    }
 
-    df["risorsa"] = df["risorsa"].fillna("N/D")
+    RESPONSABILI = {
+        "Stefano Pepe": "Stefano Pepe",
+        "Francesco Di Clemente": "Francesco Di Clemente",
+        "Silvana Ruotolo": "Stefano Pepe",
+        "Marina Padricelli": "Stefano Pepe",
+        "Luisa Veneruso": "Stefano Pepe",
+        "Loredana Scialanga": "Stefano Pepe",
+        "Mariacarla Di Matteo": "Stefano Pepe",
+        "Katuscia Leonardi": "Francesco Di Clemente",
+        "Francesca Perazzetti": "Francesco Di Clemente",
+    }
+
+    ESCLUSIONI = {
+        "",
+        "n/d",
+        "ordini diretti",
+        "ordini diretti ricerca",
+        "ordini diretti struttura",
+        "pconsales",
+        "corefice",
+    }
+
+    def _norm_name(x):
+        if pd.isna(x):
+            return None
+        s = str(x).strip()
+        s = " ".join(s.split())
+        return s
+
+    def _norm_key(x):
+        if x is None:
+            return None
+        return _norm_name(x).lower()
+
+    if "utente_presentazione" in df.columns:
+        df["risorsa_raw"] = df["utente_presentazione"].fillna(df["utente"] if "utente" in df.columns else None)
+    else:
+        df["risorsa_raw"] = df["utente"] if "utente" in df.columns else None
+
+    df["risorsa_raw"] = df["risorsa_raw"].apply(_norm_name)
+    df["risorsa_key"] = df["risorsa_raw"].apply(_norm_key)
+
+    # Tieni solo il team acquisti definito
+    df = df[df["risorsa_key"].isin(TEAM_CANONICO.keys())]
+
+    if df.empty:
+        return df
+
+    df["risorsa"] = df["risorsa_key"].map(TEAM_CANONICO)
+
+    # Responsabile associato
+    df["responsabile"] = df["risorsa"].map(RESPONSABILI).fillna("N/D")
+
+    # Escludi eventuali etichette spurie residue
+    df = df[~df["risorsa_key"].isin(ESCLUSIONI)]
+
+    if df.empty:
+        return df
+
     df["struttura"] = df["str_ric"].fillna("N/D") if "str_ric" in df.columns else "N/D"
     df["year"] = df["data_doc"].dt.year
     df["mese"] = df["data_doc"].dt.strftime("%Y-%m")
     df["mese_label"] = df["mese"]
-    df["saving_generato"] = pd.to_numeric(df.get("saving_eur", 0), errors="coerce").fillna(0)
+    df["saving_generato"] = pd.to_numeric(
+        df["saving_eur"] if "saving_eur" in df.columns else 0,
+        errors="coerce"
+    ).fillna(0)
 
     if "negoziazione" in df.columns:
         df["negoziazione"] = df["negoziazione"].fillna(False).astype(bool)
     else:
         df["negoziazione"] = False
 
-    # uso protoc_commessa se presente, altrimenti protoc_ordine
     if "protoc_commessa" in df.columns:
-        df["pratica_ref"] = df["protoc_commessa"].fillna(df.get("protoc_ordine"))
+        df["pratica_ref"] = df["protoc_commessa"].fillna(
+            df["protoc_ordine"] if "protoc_ordine" in df.columns else None
+        )
     else:
-        df["pratica_ref"] = df.get("protoc_ordine")
+        df["pratica_ref"] = df["protoc_ordine"] if "protoc_ordine" in df.columns else None
 
     df["pratica_ref"] = df["pratica_ref"].fillna("N/D")
 
     grouped = (
-        df.groupby(["risorsa", "struttura", "year", "mese", "mese_label"], dropna=False)
-          .agg(
-              pratiche_gestite=("pratica_ref", "count"),
-              pratiche_aperte=("pratica_ref", "count"),
-              pratiche_chiuse=("pratica_ref", "count"),
-              saving_generato=("saving_generato", "sum"),
-              negoziazioni_concluse=("negoziazione", "sum"),
-          )
-          .reset_index()
+        df.groupby(
+            ["responsabile", "risorsa", "struttura", "year", "mese", "mese_label"],
+            dropna=False
+        )
+        .agg(
+            pratiche_gestite=("pratica_ref", "count"),
+            pratiche_aperte=("pratica_ref", "count"),
+            pratiche_chiuse=("pratica_ref", "count"),
+            saving_generato=("saving_generato", "sum"),
+            negoziazioni_concluse=("negoziazione", "sum"),
+        )
+        .reset_index()
     )
 
     grouped["tempo_medio_giorni"] = None
@@ -234,7 +308,8 @@ def api_risorse_per_risorsa(anno: Optional[int] = Query(None)):
 
     result = []
     for risorsa, g in df.groupby("risorsa"):
-        result.append({
+               result.append({
+            "responsabile": g["responsabile"].dropna().mode().iloc[0] if "responsabile" in g.columns and not g["responsabile"].dropna().empty else None,
             "risorsa": risorsa,
             "struttura": g["struttura"].dropna().mode().iloc[0] if not g["struttura"].dropna().empty else None,
             "pratiche_gestite": int(g["pratiche_gestite"].sum()) if "pratiche_gestite" in g.columns else 0,
