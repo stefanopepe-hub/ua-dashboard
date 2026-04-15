@@ -18,6 +18,7 @@ File family classification:
 import re
 import logging
 import pandas as pd
+from difflib import SequenceMatcher
 from typing import Optional, Tuple, List, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
@@ -660,7 +661,51 @@ def _infer_from_values(col_name: str, series: pd.Series) -> Tuple[Optional[str],
 
 
 # ══════════════════════════════════════════════════════════════════
-# CORE MAPPER — 7 layer
+# L8 — FUZZY MATCHING (last resort)
+# Usa difflib.SequenceMatcher per trovare il sinonimo più vicino.
+# Attivo solo quando L1-L7 non trovano un match con conf ≥ 0.65.
+# Confidenza: (similarity − 0.60) / 0.40 × 0.72 → max 0.72
+# ══════════════════════════════════════════════════════════════════
+
+def _fuzzy_match(norm_col: str) -> Tuple[Optional[str], float]:
+    """
+    Confronta il nome colonna normalizzato con tutti i sinonimi noti.
+    Ritorna (campo_canonico, confidenza) o (None, 0.0).
+
+    Soglia minima: 0.72 similarity (evita falsi positivi).
+    Confidenza massima: 0.72 (sotto il match diretto da sinonimo).
+    """
+    FUZZY_THRESHOLD = 0.72   # similarity minima per accettare il match
+    CONF_CAP = 0.72          # confidenza massima del risultato fuzzy
+
+    best_sim: float = 0.0
+    best_canon: Optional[str] = None
+
+    # Shortcut: se la stringa è troppo corta, il fuzzy non è affidabile
+    if len(norm_col) < 3:
+        return None, 0.0
+
+    for syn, canon in _SYN_INDEX.items():
+        if abs(len(syn) - len(norm_col)) > max(len(norm_col), len(syn)) * 0.5:
+            # Se le lunghezze differiscono troppo, skip (ottimizzazione)
+            continue
+        sim = SequenceMatcher(None, norm_col, syn, autojunk=False).ratio()
+        if sim > best_sim:
+            best_sim = sim
+            best_canon = canon
+
+    if best_sim < FUZZY_THRESHOLD or best_canon is None:
+        return None, 0.0
+
+    # Scala linearmente: 0.72 sim → confidenza 0.0, 1.0 sim → confidenza CONF_CAP
+    conf = round((best_sim - FUZZY_THRESHOLD) / (1.0 - FUZZY_THRESHOLD) * CONF_CAP, 3)
+    conf = min(conf, CONF_CAP)
+
+    return best_canon, conf
+
+
+# ══════════════════════════════════════════════════════════════════
+# CORE MAPPER — 8 layer (L1-L5 + L8 fuzzy)
 # ══════════════════════════════════════════════════════════════════
 
 def map_single_column(col_name: str, series: pd.Series) -> Optional[FieldMapping]:
@@ -714,6 +759,15 @@ def map_single_column(col_name: str, series: pd.Series) -> Optional[FieldMapping
         # Valore coerente con nome → boost leggero
         if val_canon == best_canonical:
             best_conf = min(1.0, best_conf + 0.04)
+
+    # ── L8: Fuzzy matching ───────────────────────────────────────
+    # Attivo solo quando L1-L5 non trovano un match soddisfacente.
+    # Usa SequenceMatcher per trovare il sinonimo più simile.
+    # Confidenza cappata a 0.72 (sotto synonym match diretto, sopra il min 0.50).
+    if best_conf < 0.65:
+        fuzzy_canon, fuzzy_conf = _fuzzy_match(norm)
+        if fuzzy_canon and fuzzy_conf > best_conf:
+            best_canonical, best_conf, best_method = fuzzy_canon, fuzzy_conf, 'fuzzy'
 
     if not best_canonical or best_conf < 0.50:
         return None

@@ -62,6 +62,9 @@ export const api = {
   yoy:    (p={}) => get(`/kpi/saving/yoy-granulare${qs(p)}`),
   yoyCdc: (p={}) => safeArray(get(`/kpi/saving/yoy-cdc${qs(p)}`)),
 
+  // Auto-Insights
+  insights: (p={}) => safeArray(get(`/kpi/saving/insights${qs(p)}`)),
+
   // Tempi
   tempiRiepilogo: () => get('/kpi/tempi/riepilogo'),
   tempiMensile:   () => safeArray(get('/kpi/tempi/mensile')),

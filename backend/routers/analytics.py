@@ -14,6 +14,7 @@ from services.analytics import (
     kpi_per_commessa, kpi_top_fornitori, kpi_pareto,
     kpi_concentration, kpi_executive_summary, kpi_valute, kpi_yoy, kpi_yoy_cdc,
     kpi_per_protocollo_commessa, kpi_per_protocollo_ordine, kpi_per_buyer_cdc,
+    kpi_insights,
     query, safe_pct,
 )
 from domain import calc_kpi
@@ -98,6 +99,22 @@ def api_executive_summary(
 @router.get("/saving/valute")
 def api_valute(anno: Optional[int] = Query(None)):
     return kpi_valute(sb(), anno)
+
+@router.get("/saving/insights")
+def api_insights(
+    anno: Optional[int] = Query(None),
+    str_ric: Optional[str] = Query(None),
+):
+    """
+    Auto-insights engine: genera insight testuali automatici dai dati.
+    Ogni insight include type, category, title, body, metric, delta, priority.
+    """
+    try:
+        return kpi_insights(sb(), anno, str_ric)
+    except Exception as e:
+        log.error(f"insights error: {e}", exc_info=True)
+        return []
+
 
 @router.get("/saving/yoy-granulare")
 def api_yoy(anno: int = Query(...), granularita: str = Query("mensile"), str_ric: Optional[str] = Query(None), cdc: Optional[str] = Query(None)):

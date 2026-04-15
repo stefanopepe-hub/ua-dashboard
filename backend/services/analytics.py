@@ -409,3 +409,231 @@ def kpi_per_buyer_cdc(client, anno=None) -> list:
         if not buyer or not cdc_v: continue
         result.append({"buyer": buyer, "cdc": cdc_v, **calc_kpi(g)})
     return sorted(result, key=lambda x: x["saving"], reverse=True)
+
+
+# ══════════════════════════════════════════════════════════════════
+# AUTO-INSIGHTS ENGINE — genera insight testuali dai dati
+# ══════════════════════════════════════════════════════════════════
+
+def _fmt_eur(v: float) -> str:
+    """Formatta un valore in EUR in modo leggibile."""
+    if abs(v) >= 1_000_000:
+        return f"€{v/1_000_000:.1f}M"
+    if abs(v) >= 1_000:
+        return f"€{v/1_000:.0f}K"
+    return f"€{v:.0f}"
+
+def _delta_str(delta: Optional[float], unit: str = "%") -> str:
+    if delta is None: return ""
+    sign = "+" if delta > 0 else ""
+    return f"{sign}{delta:.1f}{unit}"
+
+
+def kpi_insights(client, anno: Optional[int] = None, str_ric: Optional[str] = None) -> List[Dict]:
+    """
+    Genera automaticamente un elenco di insight testuali dai dati.
+    Ogni insight ha:
+      - type: "positive" | "warning" | "info" | "alert"
+      - category: "saving" | "fornitori" | "efficienza" | "budget" | "trend"
+      - title: stringa breve
+      - body: descrizione completa
+      - metric: valore principale (opzionale)
+      - delta: variazione YoY (opzionale)
+      - priority: 1-5 (1 = più importante)
+    """
+    insights: List[Dict] = []
+    anni_data = get_anni(client)
+    anni_list = [a["anno"] for a in anni_data]
+
+    if not anni_list:
+        return []
+
+    # Anno corrente e precedente
+    anno_curr = anno or max(anni_list)
+    anno_prev = anno_curr - 1
+    has_prev = anno_prev in anni_list
+
+    # ── Dati saving ───────────────────────────────────────────────
+    cols_full = "imp_listino_eur,imp_impegnato_eur,saving_eur,negoziazione,accred_albo,alfa_documento,cdc,ragione_sociale,data_doc,macro_categoria,utente_presentazione,utente"
+    df_curr = get_saving_df(client, anno_curr, str_ric, cols=cols_full)
+    df_prev = get_saving_df(client, anno_prev, str_ric, cols=cols_full) if has_prev else pd.DataFrame()
+
+    kc = calc_kpi(df_curr)
+    kp = calc_kpi(df_prev) if not df_prev.empty else None
+
+    # ── INSIGHT 1: Saving rate ────────────────────────────────────
+    perc_saving = kc.get("perc_saving", 0)
+    if perc_saving > 0:
+        t = "positive" if perc_saving >= 8 else ("warning" if perc_saving < 5 else "info")
+        delta_ps = None
+        if kp:
+            delta_ps = round(perc_saving - kp.get("perc_saving", 0), 1)
+        insights.append({
+            "type": t,
+            "category": "saving",
+            "title": f"Saving rate {anno_curr}: {perc_saving:.1f}%",
+            "body": (
+                f"Il saving rate complessivo {anno_curr} è del {perc_saving:.1f}% "
+                f"({_fmt_eur(kc.get('saving', 0))} su {_fmt_eur(kc.get('listino', 0))} di listino)."
+                + (f" Variazione YoY: {_delta_str(delta_ps, 'pp')}." if delta_ps is not None else "")
+                + (" Risultato eccellente — sopra la soglia target del 8%." if perc_saving >= 8 else
+                   " Risultato sotto la soglia target del 5% — priorità negoziale richiesta." if perc_saving < 5 else
+                   " Risultato nella norma — margini di miglioramento disponibili.")
+            ),
+            "metric": f"{perc_saving:.1f}%",
+            "delta": _delta_str(delta_ps, " pp") if delta_ps is not None else None,
+            "priority": 1,
+        })
+
+    # ── INSIGHT 2: Tasso negoziazione ────────────────────────────
+    perc_neg = kc.get("perc_negoziati", 0)
+    n_neg = kc.get("n_negoziati", 0)
+    n_neg_doc = kc.get("n_doc_neg", 0) or kc.get("n_negotiable", 0) or n_neg
+    if n_neg_doc > 0:
+        delta_neg = None
+        if kp:
+            delta_neg = round(perc_neg - kp.get("perc_negoziati", 0), 1)
+        t = "positive" if perc_neg >= 70 else ("warning" if perc_neg < 40 else "info")
+        insights.append({
+            "type": t,
+            "category": "efficienza",
+            "title": f"Negoziazione: {perc_neg:.0f}% degli ordini trattati",
+            "body": (
+                f"Su {n_neg_doc:,} ordini negoziabili, {n_neg:,} ({perc_neg:.0f}%) "
+                f"hanno beneficiato di una negoziazione attiva."
+                + (f" YoY: {_delta_str(delta_neg, 'pp')}." if delta_neg is not None else "")
+                + (" Ottima copertura negoziale." if perc_neg >= 70 else
+                   " Attenzione: bassa copertura negoziale — opportunità di saving non catturate." if perc_neg < 40 else "")
+            ),
+            "metric": f"{perc_neg:.0f}%",
+            "delta": _delta_str(delta_neg, " pp") if delta_neg is not None else None,
+            "priority": 2,
+        })
+
+    # ── INSIGHT 3: Concentrazione fornitori ──────────────────────
+    if not df_curr.empty and "ragione_sociale" in df_curr.columns:
+        grp_forn = (
+            df_curr.groupby("ragione_sociale")["imp_impegnato_eur"]
+            .sum().sort_values(ascending=False)
+        )
+        total_spend = float(grp_forn.sum())
+        if total_spend > 0 and len(grp_forn) > 0:
+            top5_share = float(grp_forn.head(5).sum()) / total_spend * 100
+            n_forn = len(grp_forn)
+            top1 = grp_forn.index[0] if len(grp_forn) > 0 else "N/D"
+            top1_share = float(grp_forn.iloc[0]) / total_spend * 100
+            t = "warning" if top5_share > 60 or top1_share > 25 else "info"
+            insights.append({
+                "type": t,
+                "category": "fornitori",
+                "title": f"Concentrazione fornitori: top 5 = {top5_share:.0f}% della spesa",
+                "body": (
+                    f"Su {n_forn} fornitori attivi, i primi 5 rappresentano il {top5_share:.0f}% "
+                    f"della spesa totale ({_fmt_eur(total_spend)})."
+                    f" Il fornitore principale è {top1} ({top1_share:.0f}% del totale)."
+                    + (" Rischio concentrazione elevato: dipendenza da pochi fornitori." if top5_share > 60 else
+                       " Portafoglio fornitori diversificato.")
+                ),
+                "metric": f"{top5_share:.0f}%",
+                "delta": None,
+                "priority": 3,
+            })
+
+    # ── INSIGHT 4: Andamento YoY saving ──────────────────────────
+    if kp and kc.get("saving", 0) > 0 and kp.get("saving", 0) > 0:
+        delta_sav = round((kc["saving"] - kp["saving"]) / abs(kp["saving"]) * 100, 1)
+        delta_lst = round((kc["listino"] - kp["listino"]) / abs(kp["listino"]) * 100, 1) if kp["listino"] else None
+        t = "positive" if delta_sav > 5 else ("warning" if delta_sav < -5 else "info")
+        insights.append({
+            "type": t,
+            "category": "trend",
+            "title": f"Saving YoY {anno_prev}→{anno_curr}: {_delta_str(delta_sav)}",
+            "body": (
+                f"Il saving {anno_curr} ({_fmt_eur(kc['saving'])}) "
+                f"{'supera' if delta_sav > 0 else 'è inferiore a'} "
+                f"quello {anno_prev} ({_fmt_eur(kp['saving'])}) del {abs(delta_sav):.1f}%."
+                + (f" Il volume di spesa (listino) è variato del {_delta_str(delta_lst)}." if delta_lst else "")
+            ),
+            "metric": _fmt_eur(kc["saving"]),
+            "delta": _delta_str(delta_sav),
+            "priority": 2,
+        })
+
+    # ── INSIGHT 5: CDC con saving più alto ───────────────────────
+    if not df_curr.empty and "cdc" in df_curr.columns:
+        cdc_grp = df_curr.groupby("cdc").apply(calc_kpi).reset_index()
+        if not cdc_grp.empty:
+            # cdc_grp è una Series di dizionari — convertiamo
+            cdc_rows = []
+            for cdc_v, g in df_curr.groupby("cdc"):
+                if cdc_v:
+                    k = calc_kpi(g)
+                    if k["listino"] > 0:
+                        cdc_rows.append({"cdc": cdc_v, **k})
+            if cdc_rows:
+                best_cdc = max(cdc_rows, key=lambda x: x["perc_saving"])
+                worst_cdc = min(cdc_rows, key=lambda x: x["perc_saving"])
+                insights.append({
+                    "type": "info",
+                    "category": "saving",
+                    "title": f"Miglior CDC: {best_cdc['cdc']} ({best_cdc['perc_saving']:.1f}% saving)",
+                    "body": (
+                        f"Il centro di costo con saving rate più alto è {best_cdc['cdc']} "
+                        f"({best_cdc['perc_saving']:.1f}%, {_fmt_eur(best_cdc['saving'])})."
+                        f" Il CDC con saving rate più basso è {worst_cdc['cdc']} "
+                        f"({worst_cdc['perc_saving']:.1f}%). "
+                        f"Gap di {best_cdc['perc_saving'] - worst_cdc['perc_saving']:.1f} punti percentuali."
+                    ),
+                    "metric": f"{best_cdc['perc_saving']:.1f}%",
+                    "delta": None,
+                    "priority": 4,
+                })
+
+    # ── INSIGHT 6: Fornitore albo ────────────────────────────────
+    perc_albo = kc.get("perc_albo", 0)
+    if perc_albo > 0:
+        t = "positive" if perc_albo >= 60 else ("warning" if perc_albo < 30 else "info")
+        insights.append({
+            "type": t,
+            "category": "fornitori",
+            "title": f"Fornitori accreditati: {perc_albo:.0f}% degli ordini",
+            "body": (
+                f"Il {perc_albo:.0f}% degli ordini {anno_curr} è stato assegnato a fornitori accreditati all'Albo."
+                + (" Ottimo utilizzo dell'albo fornitori qualificato." if perc_albo >= 60 else
+                   " Attenzione: basso utilizzo dei fornitori accreditati — rischio qualità e compliance." if perc_albo < 30 else "")
+            ),
+            "metric": f"{perc_albo:.0f}%",
+            "delta": None,
+            "priority": 4,
+        })
+
+    # ── INSIGHT 7: Macro categoria con più saving ────────────────
+    if not df_curr.empty and "macro_categoria" in df_curr.columns:
+        mc_rows = []
+        for mc, g in df_curr.groupby("macro_categoria"):
+            if mc and str(mc).strip() not in ("", "nan", "None"):
+                k = calc_kpi(g)
+                if k["saving"] > 0:
+                    mc_rows.append({"macro": str(mc).strip(), **k})
+        if mc_rows:
+            top_mc = sorted(mc_rows, key=lambda x: x["saving"], reverse=True)[:3]
+            names = ", ".join(f"{r['macro']} ({_fmt_eur(r['saving'])})" for r in top_mc)
+            insights.append({
+                "type": "info",
+                "category": "budget",
+                "title": f"Top categoria per saving: {top_mc[0]['macro']}",
+                "body": (
+                    f"Le macro categorie con maggior saving {anno_curr} sono: {names}."
+                    f" La categoria {top_mc[0]['macro']} contribuisce il "
+                    f"{top_mc[0]['perc_saving']:.1f}% di saving rate."
+                ),
+                "metric": _fmt_eur(top_mc[0]["saving"]),
+                "delta": None,
+                "priority": 5,
+            })
+
+    # Ordina per priorità e poi per tipo (positive/alert prima)
+    TYPE_ORDER = {"alert": 0, "warning": 1, "positive": 2, "info": 3}
+    insights.sort(key=lambda x: (x["priority"], TYPE_ORDER.get(x["type"], 9)))
+
+    return insights

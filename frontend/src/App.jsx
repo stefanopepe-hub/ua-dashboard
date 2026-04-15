@@ -14,6 +14,7 @@ const AlfaDoc       = lazy(() => import('./pages/AlfaDoc'))
 const Upload        = lazy(() => import('./pages/Upload'))
 const DataQuality   = lazy(() => import('./pages/DataQuality'))
 const Risorse       = lazy(() => import('./pages/Risorse'))
+const Insights      = lazy(() => import('./pages/Insights'))
 
 // Wrapper: ogni pagina è isolata da error boundary
 function Page({ component: Comp, title }) {
@@ -39,6 +40,7 @@ export default function App() {
         <Route path="/upload"    element={<Page component={Upload}        title="Carica Dati" />} />
         <Route path="/quality"   element={<Page component={DataQuality}   title="Data Quality" />} />
         <Route path="/risorse"   element={<Page component={Risorse}       title="Risorse" />} />
+        <Route path="/insights"  element={<Page component={Insights}      title="Auto-Insights" />} />
       </Routes>
     </Layout>
   )

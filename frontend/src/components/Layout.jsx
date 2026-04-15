@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, TrendingUp, Clock, AlertTriangle,
   Building2, FileText, Upload, Database, Users,
-  Activity, ChevronRight,
+  Activity, ChevronRight, Zap,
 } from 'lucide-react'
 
 const NAV = [
@@ -11,6 +11,7 @@ const NAV = [
     section: 'Executive',
     items: [
       { to: '/',          icon: LayoutDashboard, label: 'Dashboard' },
+      { to: '/insights',  icon: Zap,             label: 'Auto-Insights', badge: 'AI' },
     ],
   },
   {
@@ -113,12 +114,17 @@ export default function Layout({ children }) {
           {NAV.map(({ section, items }) => (
             <div key={section}>
               <div className="nav-section-label">{section}</div>
-              {items.map(({ to, icon: Icon, label }) => (
+              {items.map(({ to, icon: Icon, label, badge }) => (
                 <NavLink key={to} to={to} end={to === '/'}
                   className={({ isActive }) =>
                     `nav-item ${isActive ? 'nav-item-active' : 'nav-item-idle'}`}>
                   <Icon className="h-4 w-4 flex-shrink-0" />
-                  <span className="truncate">{label}</span>
+                  <span className="truncate flex-1">{label}</span>
+                  {badge && (
+                    <span className="text-[9px] font-bold bg-telethon-blue text-white px-1.5 py-0.5 rounded-full leading-none flex-shrink-0">
+                      {badge}
+                    </span>
+                  )}
                 </NavLink>
               ))}
             </div>
