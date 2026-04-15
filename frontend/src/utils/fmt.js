@@ -1,18 +1,25 @@
-// fmt.js — Formattazione numeri, date, colori. Unica fonte di verità.
+/**
+ * fmt.js — Formattatori e palette colori enterprise
+ * Fondazione Telethon ETS — UA Dashboard
+ */
 
-export function fmtEur(v, decimali = 0) {
+// ── Formatters ─────────────────────────────────────────────────────────────
+
+const EUR = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })
+const EUR2 = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const NUM = new Intl.NumberFormat('it-IT')
+
+export function fmtEur(v) {
   if (v == null || isNaN(v)) return '—'
   const abs = Math.abs(v)
-  if (abs >= 1_000_000) return `€${(v / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)     return `€${(v / 1_000).toFixed(1)}K`
-  return `€${Number(v).toFixed(decimali)}`
+  if (abs >= 1_000_000) return `€${(v / 1_000_000).toLocaleString('it-IT', { maximumFractionDigits: 2 })}M`
+  if (abs >= 1_000)     return `€${(v / 1_000).toLocaleString('it-IT', { maximumFractionDigits: 1 })}K`
+  return EUR2.format(v)
 }
 
-export function fmtEurFull(v) {
+export function fmtNum(v) {
   if (v == null || isNaN(v)) return '—'
-  return new Intl.NumberFormat('it-IT', {
-    style: 'currency', currency: 'EUR', maximumFractionDigits: 0
-  }).format(v)
+  return NUM.format(Math.round(v))
 }
 
 export function fmtPct(v) {
@@ -20,69 +27,55 @@ export function fmtPct(v) {
   return `${Number(v).toFixed(2)}%`
 }
 
-export function fmtPct1(v) {
-  if (v == null || isNaN(v)) return '—'
-  return `${Number(v).toFixed(1)}%`
-}
-
-export function fmtNum(v) {
-  if (v == null || isNaN(v)) return '—'
-  return Number(v).toLocaleString('it-IT')
-}
-
 export function fmtDays(v) {
   if (v == null || isNaN(v)) return '—'
   return `${Number(v).toFixed(1)} gg`
 }
 
-export function shortMese(ym) {
-  if (!ym) return '—'
-  const MESI = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
-  const parts = String(ym).split('-')
-  if (parts.length === 2) {
-    const m = parseInt(parts[1], 10) - 1
-    return MESI[m] ?? ym
-  }
-  return ym
-}
-
-export function fmtDate(iso) {
-  if (!iso) return '—'
+export function fmtDate(v) {
+  if (!v) return '—'
   try {
-    return new Date(iso).toLocaleDateString('it-IT')
-  } catch {
-    return iso
-  }
+    return new Date(v).toLocaleDateString('it-IT', { day: '2-digit', month: 'short', year: 'numeric' })
+  } catch { return v }
 }
 
-// ─── Color palettes ───────────────────────────────────────────────
+// ── Palette colori enterprise ───────────────────────────────────────────────
+
 export const COLORS = {
-  blue:   '#0057A8',
-  red:    '#D81E1E',
-  green:  '#15803d',
-  orange: '#ea580c',
-  teal:   '#0891b2',
+  blue:   '#0057A8',   // Telethon brand blue
+  red:    '#D81E1E',   // Telethon brand red
+  green:  '#16a34a',
+  orange: '#f59e0b',
   purple: '#7c3aed',
-  amber:  '#d97706',
+  teal:   '#0891b2',
   gray:   '#9ca3af',
-  // light variants
-  blueLight:  '#93c5fd',
-  greenLight: '#86efac',
-  redLight:   '#fca5a5',
+  yellow: '#eab308',
 }
 
 export const CDC_COLORS = {
   GD:        '#0057A8',
   TIGEM:     '#D81E1E',
-  TIGET:     '#15803d',
-  FT:        '#ea580c',
+  TIGET:     '#16a34a',
+  FT:        '#f59e0b',
   STRUTTURA: '#7c3aed',
 }
 
-export const CDC_ORDER = ['GD', 'TIGEM', 'TIGET', 'FT', 'STRUTTURA']
-
-// Chart palette — per serie ordinate
 export const CHART_PALETTE = [
-  '#0057A8', '#D81E1E', '#15803d', '#ea580c', '#7c3aed',
-  '#0891b2', '#d97706', '#9ca3af', '#1d4ed8', '#dc2626',
+  '#0057A8', '#D81E1E', '#16a34a', '#f59e0b',
+  '#7c3aed', '#0891b2', '#9ca3af', '#eab308',
+  '#ec4899', '#14b8a6',
 ]
+
+export const SPEND_BUCKET_COLORS = {
+  'Materiali di Consumo': '#0057A8',
+  'Servizi':              '#f59e0b',
+  'Strumentazione':       '#16a34a',
+  'Non Classificato':     '#9ca3af',
+}
+
+export function shortMese(v) {
+  const m = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic']
+  if (!v) return '—'
+  const n = typeof v === 'string' ? parseInt(v.split('-')[1]) : v
+  return m[n - 1] || String(v)
+}
