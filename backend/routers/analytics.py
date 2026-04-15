@@ -12,7 +12,8 @@ from services.analytics import (
     get_anni, kpi_riepilogo, kpi_mensile, kpi_mensile_area,
     kpi_per_cdc, kpi_per_buyer, kpi_per_alfa, kpi_per_macro,
     kpi_per_commessa, kpi_top_fornitori, kpi_pareto,
-    kpi_concentration, kpi_executive_summary, kpi_valute, kpi_yoy, kpi_yoy_cdc,
+    kpi_concentration, kpi_executive_summary, kpi_valute, kpi_valute_esposizione,
+    kpi_yoy, kpi_yoy_cdc,
     kpi_per_protocollo_commessa, kpi_per_protocollo_ordine, kpi_per_buyer_cdc,
     kpi_insights,
     query, safe_pct,
@@ -99,6 +100,15 @@ def api_executive_summary(
 @router.get("/saving/valute")
 def api_valute(anno: Optional[int] = Query(None)):
     return kpi_valute(sb(), anno)
+
+@router.get("/saving/valute-esposizione")
+def api_valute_esposizione(anno: Optional[int] = Query(None)):
+    """
+    Esposizione valutaria reale: mostra gli importi nella valuta originale
+    con il controvalore EUR calcolato tramite cambio storico BCE.
+    Utile per analisi rischio cambio e reportistica treasury.
+    """
+    return kpi_valute_esposizione(sb(), anno)
 
 @router.get("/saving/insights")
 def api_insights(

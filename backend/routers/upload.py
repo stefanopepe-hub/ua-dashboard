@@ -234,6 +234,38 @@ async def upload_nc(file: UploadFile = File(...)):
     return _result_payload(result, target_domain="nc")
 
 
+@router.post("/vis-dettagliata")
+async def upload_vis_dettagliata(file: UploadFile = File(...)):
+    """
+    Carica file vis_dettagliata (71 colonne Zucchetti ERP).
+    Ritorna KPI aggregati in-memory: spesa per fornitore, CDC, valuta, trend mensile.
+    Nessuna persistenza su DB (analisi immediata).
+    """
+    import pandas as pd
+    from services.vis_dettagliata import read_vis_dettagliata, process_vis_dettagliata
+
+    contents = await file.read()
+    try:
+        df = read_vis_dettagliata(contents)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        log.error(f"vis_dettagliata read error {file.filename}: {exc}", exc_info=True)
+        raise HTTPException(400, f"Errore lettura file: {str(exc)[:200]}")
+
+    try:
+        result = process_vis_dettagliata(df)
+    except Exception as exc:
+        log.error(f"vis_dettagliata process error {file.filename}: {exc}", exc_info=True)
+        raise HTTPException(500, f"Errore elaborazione vis_dettagliata: {str(exc)[:200]}")
+
+    return {
+        "status": "ok",
+        "filename": file.filename,
+        **result,
+    }
+
+
 @router.get("/log")
 def upload_log():
     """

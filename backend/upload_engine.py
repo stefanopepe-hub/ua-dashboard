@@ -18,6 +18,7 @@ PRINCIPI:
 import io
 import logging
 import re
+import datetime
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -26,6 +27,7 @@ import pandas as pd
 from domain import (
     _b, _d, _f, _fn, _i, _s, clean, parse_commessa, safe_pct,
 )
+from services.fx_rates import get_rate_safe
 from ingestion_engine import (
     Confidence, FieldMapping, FileFamily, MappingResult,
     build_column_map, classify_file_family, detect_header_row,
@@ -268,20 +270,53 @@ def normalize_saving_row(
     if not dv:
         return None
 
-    cambio = _f(g('cambio'), 1.0) or 1.0
-    valuta = _s(g('valuta')) or 'EURO'
+    # Parsa la data per ECB lookup
+    try:
+        dv_date = datetime.date.fromisoformat(dv)
+    except Exception:
+        dv_date = None
 
-    # Importi: EUR priorità assoluta, poi valuta convertita
+    valuta = _s(g('valuta')) or 'EURO'
+    cambio_raw = _f(g('cambio'), 0.0)
+
+    # Importi: EUR priorità assoluta (file 2025 con colonne Z-AC)
+    # poi conversione da valuta originale con cambio BCE storico
     has_eur = 'listino_eur' in col_map and 'impegnato_eur' in col_map
     if has_eur:
         lst   = _f(g('listino_eur'))
         imp   = _f(g('impegnato_eur'))
         sav   = _f(g('saving_eur'))
         pct_s = _f(g('perc_saving_eur'))
+        # Derivato: cambio = listino_val / listino_eur (convenzione: foreign/EUR)
+        lst_val = _f(g('listino_val'))
+        if cambio_raw and cambio_raw > 0:
+            cambio = cambio_raw
+        elif lst and lst > 0 and lst_val and lst_val > 0:
+            cambio = round(lst_val / lst, 6)
+        else:
+            cambio = 1.0
     else:
-        lst   = _f(g('listino_val')) * cambio
-        imp   = _f(g('impegnato_val')) * cambio
-        sav   = _f(g('saving_val')) * cambio
+        # Determina il tasso di cambio: colonna file → ECB storico → 1.0
+        # Convenzione ECB: tasso = unità di valuta straniera per 1 EUR
+        # Conversione: EUR_amount = foreign_amount / tasso
+        cur_upper = valuta.upper().strip()
+        eur_aliases = {"EUR", "EURO", "€"}
+        if cambio_raw and cambio_raw > 0:
+            # File con cambio colonna già popolata (es. formato Zucchetti legacy)
+            # Verifica se è già in convenzione EUR/foreign (< 1 per most currencies)
+            # oppure foreign/EUR (ECB convention, > 1 per USD, GBP etc.)
+            # Assumiamo convenzione ECB (foreign/EUR) se cambio >= 1
+            cambio = cambio_raw
+        elif cur_upper not in eur_aliases and dv_date:
+            # Recupera il cambio storico BCE alla data del documento
+            cambio = get_rate_safe(cur_upper, dv_date, fallback=1.0)
+        else:
+            cambio = 1.0
+        # EUR = foreign / cambio (dove cambio = foreign_currency per 1 EUR)
+        cambio_divisor = cambio if cambio > 0 else 1.0
+        lst   = _f(g('listino_val')) / cambio_divisor
+        imp   = _f(g('impegnato_val')) / cambio_divisor
+        sav   = _f(g('saving_val')) / cambio_divisor
         pct_s = _f(g('perc_saving_val'))
 
     # Ricalcola saving se mancante

@@ -12,7 +12,115 @@ import {
   KpiCard, FilterBar, GranSelect, DeltaBadge,
   LoadingBox, ErrorBox, SectionTitle, DataTable, Badge,
 } from '../components/UI'
-import { Download } from 'lucide-react'
+import { Download, AlertTriangle, ChevronDown } from 'lucide-react'
+
+/* ── Esposizione Valutaria — collapsible panel ────────────────────────── */
+function EsposizioneValutaria({ anno, ready }) {
+  const [open, setOpen] = useState(false)
+  const { data: esp, loading } = useKpi(
+    () => ready ? api.valuteEsposizione({ anno }) : Promise.resolve(null),
+    [anno]
+  )
+  const valute  = esp?.valute || []
+  const foreign = valute.filter(v => v.is_foreign)
+  if (!ready || (!loading && !foreign.length)) return null
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-gray-50/60 transition-colors"
+      >
+        <div>
+          <div className="flex items-center gap-2">
+            <h3 className="section-title mb-0">Esposizione Valutaria — {anno}</h3>
+            {!loading && foreign.length > 0 && (
+              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 font-semibold">
+                <AlertTriangle className="h-3 w-3" />{foreign.length} valute estere
+              </span>
+            )}
+          </div>
+          {!loading && esp && (
+            <p className="text-xs text-gray-400 mt-0.5">
+              Esposizione estera: {fmtEur(esp.esposizione_estera_eur)} ({fmtPct(esp.perc_esposizione_estera)} del totale)
+            </p>
+          )}
+        </div>
+        <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-100">
+          {loading ? (
+            <div className="p-6"><LoadingBox rows={4} /></div>
+          ) : !foreign.length ? (
+            <div className="text-center py-8 text-gray-400 text-sm">Nessun ordine in valuta estera</div>
+          ) : (
+            <>
+              {/* Summary */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 px-6 py-4 bg-amber-50/30 border-b border-amber-100/60">
+                {[
+                  { label: 'Totale EUR', value: fmtEur(esp.totale_eur), cls: 'text-gray-900' },
+                  { label: 'Valute', value: fmtNum(esp.n_valute), cls: 'text-gray-900' },
+                  { label: 'Ordini Forex', value: fmtNum(foreign.reduce((s,v) => s + (v.n_ordini||0), 0)), cls: 'text-amber-700' },
+                  { label: 'Esposizione Estera', value: fmtEur(esp.esposizione_estera_eur), cls: 'text-amber-700',
+                    sub: `${fmtPct(esp.perc_esposizione_estera)} del totale` },
+                ].map(({label, value, cls, sub}) => (
+                  <div key={label}>
+                    <div className="text-xs text-gray-500 font-semibold uppercase tracking-wider mb-1">{label}</div>
+                    <div className={`text-lg font-extrabold ${cls}`}>{value}</div>
+                    {sub && <div className="text-xs text-gray-400">{sub}</div>}
+                  </div>
+                ))}
+              </div>
+              {/* Detail table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-100 bg-gray-50/60">
+                      {['Valuta','N. Ordini','Importo Originale','Cambio Medio','Controvalore EUR','% Totale','Rischio'].map((h,i) => (
+                        <th key={h} className={`py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider
+                          ${i > 0 ? 'text-right' : 'text-left'} ${i===6 ? 'text-center' : ''}
+                          ${i===2||i===3 ? 'hidden lg:table-cell' : ''}`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {valute.map((v, i) => (
+                      <tr key={v.valuta||i} className={`transition-colors ${v.is_foreign ? 'hover:bg-amber-50/30' : 'opacity-60 hover:bg-gray-50/60'}`}>
+                        <td className="py-3 px-4 font-bold text-sm text-gray-900">{v.valuta || '—'}</td>
+                        <td className="py-3 px-4 text-right tabular-nums text-gray-700">{fmtNum(v.n_ordini)}</td>
+                        <td className="py-3 px-4 text-right tabular-nums text-gray-600 hidden lg:table-cell">
+                          {v.importo_originale != null
+                            ? `${Number(v.importo_originale).toLocaleString('it-IT',{maximumFractionDigits:0})} ${v.valuta}`
+                            : '—'}
+                        </td>
+                        <td className="py-3 px-4 text-right tabular-nums text-gray-600 hidden lg:table-cell">
+                          {v.cambio_medio != null ? Number(v.cambio_medio).toFixed(4) : '—'}
+                        </td>
+                        <td className="py-3 px-4 text-right tabular-nums font-semibold text-gray-800">{fmtEur(v.impegnato_eur)}</td>
+                        <td className="py-3 px-4 text-right tabular-nums">
+                          <span className={`font-semibold ${v.is_foreign ? 'text-amber-700' : 'text-gray-500'}`}>{fmtPct(v.perc_su_totale_eur)}</span>
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          {v.is_foreign
+                            ? <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 font-semibold whitespace-nowrap">
+                                <AlertTriangle className="h-3 w-3" />Rischio cambio
+                              </span>
+                            : <span className="text-xs text-gray-300">—</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function Saving() {
   const { anni, defaultAnno } = useAnni()
@@ -378,6 +486,9 @@ export default function Saving() {
             />
           )}
         </div>
+
+        {/* Esposizione Valutaria — nuova analisi rischio cambio */}
+        <EsposizioneValutaria anno={anno} ready={ready} />
       </div>
     </div>
   )

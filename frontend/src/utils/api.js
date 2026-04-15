@@ -56,7 +56,8 @@ export const api = {
   topFornitori: (p={}) => safeArray(get(`/kpi/saving/top-fornitori${qs(p)}`)),
   pareto:       (p={}) => safeArray(get(`/kpi/saving/pareto-fornitori${qs(p)}`)),
   concentration:(p={}) => get(`/kpi/saving/concentration-index${qs(p)}`),
-  valute:       (p={}) => safeArray(get(`/kpi/saving/valute${qs(p)}`)),
+  valute:           (p={}) => safeArray(get(`/kpi/saving/valute${qs(p)}`)),
+  valuteEsposizione:(p={}) => get(`/kpi/saving/valute-esposizione${qs(p)}`),
 
   // YoY
   yoy:    (p={}) => get(`/kpi/saving/yoy-granulare${qs(p)}`),

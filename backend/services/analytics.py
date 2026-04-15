@@ -266,6 +266,7 @@ def kpi_executive_summary(client, anno=None, str_ric=None, cdc=None) -> dict:
 
 
 def kpi_valute(client, anno=None) -> list:
+    """Spesa in EUR per valuta originale (tutti i valori convertiti in EUR)."""
     df = get_saving_df(client, anno, cols="valuta,imp_listino_eur,imp_impegnato_eur")
     if df.empty: return []
     grp = df.groupby("valuta").agg(
@@ -276,6 +277,68 @@ def kpi_valute(client, anno=None) -> list:
     total = grp["impegnato_eur"].sum()
     grp["perc"] = (grp["impegnato_eur"] / total * 100).round(2)
     return grp.sort_values("impegnato_eur", ascending=False).to_dict(orient="records")
+
+
+def kpi_valute_esposizione(client, anno=None) -> dict:
+    """
+    Esposizione valutaria in valuta ORIGINALE (non convertita).
+    Fornisce la visibilità sul rischio cambio effettivo.
+    Include: controvalore EUR calcolato + importo originale + cambio medio usato.
+    """
+    df = get_saving_df(
+        client, anno,
+        cols="valuta,cambio,imp_iniziale,imp_negoziato,imp_listino_eur,imp_impegnato_eur,saving_eur,data_doc"
+    )
+    if df.empty:
+        return {"totale_eur": 0, "n_valute": 0, "valute": []}
+
+    for c in ["imp_iniziale", "imp_negoziato", "cambio"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    result = []
+    total_eur = float(df["imp_impegnato_eur"].sum()) if "imp_impegnato_eur" in df.columns else 0
+
+    for valuta, g in df.groupby("valuta"):
+        n = len(g)
+        importo_orig = float(g["imp_iniziale"].sum()) if "imp_iniziale" in g.columns else 0
+        negoziato_orig = float(g["imp_negoziato"].sum()) if "imp_negoziato" in g.columns else 0
+        impegnato_eur = float(g["imp_impegnato_eur"].sum()) if "imp_impegnato_eur" in g.columns else 0
+        listino_eur = float(g["imp_listino_eur"].sum()) if "imp_listino_eur" in g.columns else 0
+        saving_eur_v = float(g["saving_eur"].sum()) if "saving_eur" in g.columns else 0
+
+        # Cambio medio ponderato (esclude zero)
+        cambi_validi = g["cambio"][g["cambio"] > 0] if "cambio" in g.columns else pd.Series([])
+        cambio_medio = float(cambi_validi.mean()) if len(cambi_validi) > 0 else 1.0
+
+        perc_su_totale = round(impegnato_eur / total_eur * 100, 2) if total_eur > 0 else 0
+
+        result.append({
+            "valuta": valuta,
+            "n_ordini": n,
+            "importo_originale": round(importo_orig, 2),
+            "negoziato_originale": round(negoziato_orig, 2),
+            "impegnato_eur": round(impegnato_eur, 2),
+            "listino_eur": round(listino_eur, 2),
+            "saving_eur": round(saving_eur_v, 2),
+            "cambio_medio": round(cambio_medio, 6),
+            "perc_su_totale_eur": perc_su_totale,
+            "is_foreign": valuta.upper().strip() not in {"EUR", "EURO", "€"},
+        })
+
+    result.sort(key=lambda x: x["impegnato_eur"], reverse=True)
+    foreign = [r for r in result if r["is_foreign"]]
+
+    return {
+        "totale_eur": round(total_eur, 2),
+        "n_valute": len(result),
+        "n_valute_estere": len(foreign),
+        "esposizione_estera_eur": round(sum(r["impegnato_eur"] for r in foreign), 2),
+        "perc_esposizione_estera": round(
+            sum(r["impegnato_eur"] for r in foreign) / total_eur * 100, 2
+        ) if total_eur > 0 else 0,
+        "valute": result,
+    }
 
 
 def kpi_yoy(
